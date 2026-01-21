@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.karatelabs</groupId>
+    <artifactId>karate-js-benchmark</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>Karate JS Benchmark</name>
+    <description>Performance benchmark comparing Karate's JavaScript engine against Rhino and GraalJS</description>
+    <url>https://github.com/ptrthomas/karate-js-benchmark</url>
+
+    <properties>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <karate.version>2.0.0.RC1</karate.version>
+        <rhino.version>1.9.0</rhino.version>
+        <graaljs.version>24.1.1</graaljs.version>
+    </properties>
+
+    <dependencies>
+        <!-- Karate JS Engine -->
+        <dependency>
+            <groupId>io.karatelabs</groupId>
+            <artifactId>karate-js</artifactId>
+            <version>${karate.version}</version>
+        </dependency>
+
+        <!-- Mozilla Rhino -->
+        <dependency>
+            <groupId>org.mozilla</groupId>
+            <artifactId>rhino</artifactId>
+            <version>${rhino.version}</version>
+        </dependency>
+
+        <!-- GraalJS -->
+        <dependency>
+            <groupId>org.graalvm.polyglot</groupId>
+            <artifactId>polyglot</artifactId>
+            <version>${graaljs.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.graalvm.polyglot</groupId>
+            <artifactId>js-community</artifactId>
+            <version>${graaljs.version}</version>
+            <type>pom</type>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <configuration>
+                    <mainClass>io.karatelabs.benchmark.JsEngineBenchmark</mainClass>
+                    <systemProperties>
+                        <systemProperty>
+                            <key>polyglot.engine.WarnInterpreterOnly</key>
+                            <value>false</value>
+                        </systemProperty>
+                    </systemProperties>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
