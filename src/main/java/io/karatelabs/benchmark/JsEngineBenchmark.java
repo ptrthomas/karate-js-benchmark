@@ -136,7 +136,7 @@ public class JsEngineBenchmark {
     private interface Config {
         String label();
 
-        void evalFresh(String source);
+        Object evalFresh(String source);
 
         /** Create and immediately discard a context, with no evaluation. */
         void createContext();
@@ -161,8 +161,8 @@ public class JsEngineBenchmark {
             return "Karate";
         }
 
-        public void evalFresh(String source) {
-            new Engine().eval(source);
+        public Object evalFresh(String source) {
+            return new Engine().eval(source);
         }
 
         public void createContext() {
@@ -176,26 +176,50 @@ public class JsEngineBenchmark {
     };
 
     /** Rhino in its DEFAULT mode: generates JVM bytecode and defines a class per evaluation. */
-    private static final Config RHINO = rhino(false, "Rhino");
+    private static final Config RHINO = rhino(false, false, "Rhino");
 
     /**
      * Rhino in interpreted mode - skips bytecode generation and class definition entirely.
-     * For parse-once-run-once this is normally much faster than Rhino's default, which is
-     * why publishing only the default would understate Rhino.
+     * For parse-once-run-once this is normally much faster than Rhino's default.
      */
-    private static final Config RHINO_INTERPRETED = rhino(true, "Rhino-int");
+    private static final Config RHINO_INTERPRETED = rhino(true, false, "Rhino-int");
 
-    private static Config rhino(boolean interpreted, String label) {
+    /**
+     * Rhino tuned the way Rhino's own docs recommend for embedding: interpreted mode plus a
+     * shared SEALED standard-objects scope, with each eval getting a cheap fresh scope that
+     * merely prototypes off it. Rhino's docs call initStandardObjects "an expensive method
+     * to call"; this pays it once. Structurally this is the same design as Karate's - an
+     * immutable shared standard library behind a cheap per-eval global - so it is the
+     * fairest Rhino comparison, not merely the fastest.
+     */
+    private static final Config RHINO_SHARED = rhino(true, true, "Rhino-best");
+
+    /** Built once, sealed, then shared as the prototype of every per-eval scope. */
+    private static final org.mozilla.javascript.ScriptableObject RHINO_SEALED_ROOT = buildSealedRoot();
+
+    private static org.mozilla.javascript.ScriptableObject buildSealedRoot() {
+        org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.enter();
+        try {
+            cx.setInterpretedMode(true);
+            // full (not "safe") standard objects - Karate's engine ships Java interop too
+            org.mozilla.javascript.ScriptableObject root = cx.initStandardObjects(null, true);
+            root.sealObject();
+            return root;
+        } finally {
+            org.mozilla.javascript.Context.exit();
+        }
+    }
+
+    private static Config rhino(boolean interpreted, boolean sharedScope, String label) {
         return new Config() {
             public String label() {
                 return label;
             }
 
-            public void evalFresh(String source) {
+            public Object evalFresh(String source) {
                 org.mozilla.javascript.Context cx = enter();
                 try {
-                    org.mozilla.javascript.Scriptable scope = cx.initStandardObjects();
-                    cx.evaluateString(scope, source, "benchmark", 1, null);
+                    return cx.evaluateString(newScope(cx), source, "benchmark", 1, null);
                 } finally {
                     org.mozilla.javascript.Context.exit();
                 }
@@ -204,7 +228,7 @@ public class JsEngineBenchmark {
             public void createContext() {
                 org.mozilla.javascript.Context cx = enter();
                 try {
-                    cx.initStandardObjects();
+                    newScope(cx);
                 } finally {
                     org.mozilla.javascript.Context.exit();
                 }
@@ -212,7 +236,7 @@ public class JsEngineBenchmark {
 
             public Reusable reusable() {
                 org.mozilla.javascript.Context cx = enter();
-                org.mozilla.javascript.Scriptable scope = cx.initStandardObjects();
+                org.mozilla.javascript.Scriptable scope = newScope(cx);
                 return new Reusable() {
                     public void eval(String source) {
                         cx.evaluateString(scope, source, "benchmark", 1, null);
@@ -222,6 +246,17 @@ public class JsEngineBenchmark {
                         org.mozilla.javascript.Context.exit();
                     }
                 };
+            }
+
+            /** A fresh top-level scope - either built from scratch, or prototyped off the sealed root. */
+            private org.mozilla.javascript.Scriptable newScope(org.mozilla.javascript.Context cx) {
+                if (!sharedScope) {
+                    return cx.initStandardObjects();
+                }
+                org.mozilla.javascript.Scriptable scope = cx.newObject(RHINO_SEALED_ROOT);
+                scope.setPrototype(RHINO_SEALED_ROOT);
+                scope.setParentScope(null);
+                return scope;
             }
 
             private org.mozilla.javascript.Context enter() {
@@ -245,9 +280,9 @@ public class JsEngineBenchmark {
                 return label;
             }
 
-            public void evalFresh(String source) {
+            public Object evalFresh(String source) {
                 try (org.graalvm.polyglot.Context ctx = build()) {
-                    ctx.eval("js", source);
+                    return ctx.eval("js", source).as(Object.class);
                 }
             }
 
@@ -279,7 +314,20 @@ public class JsEngineBenchmark {
 
     /** Column order for every table and for the CSV. Karate must stay first. */
     private static final List<Config> CONFIGS = List.of(
-            KARATE, RHINO, RHINO_INTERPRETED, GRAAL, GRAAL_SHARED);
+            KARATE, RHINO, RHINO_INTERPRETED, RHINO_SHARED, GRAAL, GRAAL_SHARED);
+
+    /**
+     * Makes each iteration's source text unique, so no engine can serve a cached parse.
+     * <p>
+     * This matters for fairness. Karate re-parses on every eval - it has no source cache -
+     * while GraalJS with a shared Engine caches parsed sources across contexts, so
+     * re-evaluating byte-identical text would let it skip work Karate always does. The
+     * scenario being measured is "many small INDEPENDENT scripts", where a cache would not
+     * hit anyway, so a trailing unique comment keeps every engine doing the same work.
+     */
+    private static String unique(String source, int i) {
+        return source + "\n//" + i;
+    }
 
     private static final List<BenchmarkResult> results = new ArrayList<>();
 
@@ -307,6 +355,8 @@ public class JsEngineBenchmark {
 
         printHeader();
 
+        verifyAllConfigsAgree();
+
         System.out.println("Warming up all engines...");
         warmup();
         System.out.println("Warmup complete.\n");
@@ -327,18 +377,67 @@ public class JsEngineBenchmark {
         System.out.println();
         System.out.println("Engines under test:");
         System.out.println("  - Karate        Karate's JS engine v" + version("karate.version"));
-        System.out.println("  - Rhino         Mozilla Rhino v" + version("rhino.version") + ", ES6, compiled mode (its DEFAULT)");
+        System.out.println("  - Rhino         Mozilla Rhino v" + version("rhino.version") + ", compiled mode (its DEFAULT)");
         System.out.println("  - Rhino-int     the same, interpreted mode - no bytecode generation");
+        System.out.println("  - Rhino-best    interpreted + a shared SEALED root scope (Rhino's documented pattern)");
         System.out.println("  - Graal         GraalJS v" + version("graaljs.version") + ", private Engine per Context (the DEFAULT)");
         System.out.println("  - Graal-shared  the same, one Engine shared across Contexts");
         System.out.println();
         System.out.println("Java: " + System.getProperty("java.version") + " | OS: " + System.getProperty("os.name")
                 + " " + System.getProperty("os.arch") + " | CPUs: " + Runtime.getRuntime().availableProcessors());
         System.out.println();
-        System.out.println("GraalJS runs interpreted - a stock JVM has no JVMCI, so it never JIT-compiles.");
-        System.out.println("Both competitors are shown tuned as well as default; 'Best' is the fastest");
-        System.out.println("non-Karate configuration, which is what Karate is fairly compared against.");
+        System.out.println("GraalJS runs interpreted: since Truffle 25.1 the optimizing runtime needs");
+        System.out.println("GraalVM, so on a stock JDK there is no supported way to enable its JIT.");
+        System.out.println("Every eval gets UNIQUE source text, so no engine can serve a cached parse -");
+        System.out.println("Karate has no source cache, and the scenario is many independent scripts.");
+        System.out.println("'Karate vs best' scores Karate against the fastest non-Karate config.");
         System.out.println();
+    }
+
+    /**
+     * Every configuration must produce the SAME answer for every workload before any of it
+     * is timed. Without this, a config that silently fails - a sealed scope rejecting a
+     * declaration, a tuning flag that skips work - would look blazingly fast and the
+     * benchmark would publish it. Aborts the run rather than reporting a fast no-op.
+     */
+    private static void verifyAllConfigsAgree() {
+        System.out.println("Verifying all configurations agree...");
+        String[][] workloads = {
+                {"Arithmetic", JS_ARITHMETIC}, {"Strings", JS_STRINGS}, {"Objects", JS_OBJECTS},
+                {"Functions", JS_FUNCTIONS}, {"Mixed", JS_MIXED}};
+        boolean failed = false;
+        for (String[] w : workloads) {
+            String expected = null;
+            for (Config c : CONFIGS) {
+                String actual;
+                try {
+                    actual = String.valueOf(toNumber(c.evalFresh(w[1])));
+                } catch (RuntimeException e) {
+                    actual = "THREW " + e.getClass().getSimpleName() + ": " + e.getMessage();
+                }
+                if (expected == null) {
+                    expected = actual;
+                } else if (!expected.equals(actual)) {
+                    System.err.println("  MISMATCH " + w[0] + ": " + CONFIGS.get(0).label() + "=" + expected
+                            + " but " + c.label() + "=" + actual);
+                    failed = true;
+                }
+            }
+            System.out.println("  " + w[0] + " = " + expected + " (all " + CONFIGS.size() + " agree)");
+        }
+        if (failed) {
+            throw new IllegalStateException("configurations disagree - refusing to publish benchmark numbers");
+        }
+        System.out.println();
+    }
+
+    /** Normalises numeric results so 55.0 (double) and 55 (int) compare equal across engines. */
+    private static Object toNumber(Object o) {
+        if (o instanceof Number n) {
+            double d = n.doubleValue();
+            return Math.abs(d) < 1e12 ? Math.round(d * 1e6) / 1e6 : d;
+        }
+        return o;
     }
 
     private static void warmup() {
@@ -349,13 +448,14 @@ public class JsEngineBenchmark {
         }
     }
 
-    /** Median of 5 timed runs, in ms per iteration. */
-    private static double measure(int iterations, Runnable body) {
+    /** Median of 5 timed runs, in ms per iteration. The body receives a per-iteration counter. */
+    private static double measure(int iterations, java.util.function.IntConsumer body) {
         long[] times = new long[5];
+        int n = 0;
         for (int run = 0; run < 5; run++) {
             long start = System.nanoTime();
             for (int i = 0; i < iterations; i++) {
-                body.run();
+                body.accept(n++);
             }
             times[run] = System.nanoTime() - start;
         }
@@ -379,7 +479,7 @@ public class JsEngineBenchmark {
         double[] values = new double[CONFIGS.size()];
         for (int i = 0; i < CONFIGS.size(); i++) {
             Config c = CONFIGS.get(i);
-            values[i] = measure(iterations, c::createContext);
+            values[i] = measure(iterations, n -> c.createContext());
         }
 
         printRow("Context Create", values, true);
@@ -410,7 +510,7 @@ public class JsEngineBenchmark {
         double[] values = new double[CONFIGS.size()];
         for (int i = 0; i < CONFIGS.size(); i++) {
             Config c = CONFIGS.get(i);
-            values[i] = measure(iterations, () -> c.evalFresh(source));
+            values[i] = measure(iterations, n -> c.evalFresh(unique(source, n)));
         }
         printRow(name, values, false);
         results.add(new BenchmarkResult(name, source.length(), values));
@@ -439,14 +539,13 @@ public class JsEngineBenchmark {
                 }
             }
             try (Reusable r = c.reusable()) {
-                reuse[i] = measure(iterations, () -> r.eval(wrappedMixed));
+                reuse[i] = measure(iterations, n -> r.eval(wrappedMixed));
             }
             // a distinct script each time, to defeat parsed-source caching
             String prefix = "(function() { var _seed = ";
             String suffix = ";\n" + JS_MIXED + "\n})();";
             try (Reusable r = c.reusable()) {
-                int[] seed = {0};
-                noCache[i] = measure(iterations, () -> r.eval(prefix + seed[0]++ + suffix));
+                noCache[i] = measure(iterations, n -> r.eval(prefix + n + suffix));
             }
         }
         printRow("Mixed (reuse)", reuse, false);
@@ -476,7 +575,7 @@ public class JsEngineBenchmark {
             double[] values = new double[CONFIGS.size()];
             for (int i = 0; i < CONFIGS.size(); i++) {
                 Config c = CONFIGS.get(i);
-                values[i] = measure(iterations, () -> c.evalFresh(script));
+                values[i] = measure(iterations, n -> c.evalFresh(unique(script, n)));
             }
             printRow(sizeLabel, values, false);
             results.add(new BenchmarkResult("Large-" + sizeLabel, script.length(), values));
