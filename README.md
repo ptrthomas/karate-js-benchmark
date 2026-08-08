@@ -1,6 +1,10 @@
 # Karate JS Engine Benchmark
 
-Performance benchmark comparing [Karate's JavaScript engine](https://github.com/karatelabs/karate/tree/main/karate-js) against [Mozilla Rhino](https://github.com/mozilla/rhino) and [GraalJS](https://github.com/oracle/graaljs).
+Performance benchmark comparing [Karate's JavaScript engine](https://github.com/karatelabs/karate/tree/main/karate-js) against [Mozilla Rhino](https://github.com/mozilla/rhino) and [GraalJS](https://github.com/oracle/graaljs), for the workload Karate cares about: **many small scripts, each evaluated in a fresh context**.
+
+Every competing engine is measured **twice** — in its default configuration, and tuned for this workload. That matters more than we expected: the defaults are not these engines' best showing, and a benchmark that only reported defaults would have flattered Karate considerably. Karate is scored against whichever *tuned* competitor is fastest.
+
+That makes this repo useful beyond Karate. If you embed Rhino or GraalJS yourself, the default-vs-tuned columns show what a one-line configuration change is worth for short-script workloads — see [Engine configuration](#engine-configuration).
 
 `karate-js` is built **from source** off [`karatelabs/karate`](https://github.com/karatelabs/karate) `main` — not from the Maven Central release, which lags `main` considerably.
 
@@ -13,23 +17,29 @@ All numbers below are produced by the [`benchmark` workflow](.github/workflows/b
 
 ## Analysis
 
-### Karate is a good fit for short expressions
+### Where Karate wins
 
-Creating a new Karate `Engine` is orders of magnitude cheaper than a Rhino or GraalJS context. Karate scripts are typically short snippets or expressions scattered within a Gherkin file, so context creation overhead dominates total execution time — Rhino and GraalJS pay tens of microseconds per context, Karate pays a small fraction of one.
+Sub-1KB scripts in fresh contexts, and context creation. Against **tuned** competitors that is roughly 1–2x on short-script evaluation, and one to two orders of magnitude on context creation. Against the *defaults* the gap looks far larger, which is why the defaults alone would have been a misleading thing to publish.
 
-Read that number as an *architectural* difference, not a like-for-like one. The three engines defer different amounts of work: Karate's standard library lives in lazily-initialised JVM-wide singletons, so `new Engine()` allocates very little; Rhino's `initStandardObjects()` eagerly builds a full global environment; GraalJS's `Context.build()` does not initialise the JS language until something is actually evaluated, so its figure understates its true first-use cost. Sharing an immutable standard library across contexts is a real design win for this use case — but the honest end-to-end comparison is the fresh-context evaluation table, not this one.
+Karate scripts are short snippets scattered through feature files, so context creation dominates total execution time. That is the regime the engine is built for and the regime it wins.
 
-### When GraalJS would win
+### Where Karate loses
 
-- **Large scripts**: past the crossover point (~30–50KB), GraalJS's faster execution outweighs its context setup cost.
-- **Context reuse**: with context creation removed from the picture, GraalJS's interpreter is several times faster than Karate for pure execution.
-- **GraalVM native**: with JVMCI enabled, GraalJS would JIT-compile hot paths. On a stock JVM it runs interpreted, which is what this benchmark measures.
+- **Anything beyond a few KB.** GraalJS with a shared `Engine` overtakes Karate at around 5KB and is several times faster by 100KB.
+- **Context reuse.** With context creation removed, GraalJS is several times faster for pure execution, and tuned Rhino is ahead too.
+- **GraalVM proper.** With JVMCI enabled GraalJS would JIT-compile hot paths. On a stock JVM it runs interpreted, which is what this measures.
 
-### Perspective on script sizes
+### Reading the context-creation number
 
-The crossover only matters if real Karate scripts get that large — and they don't. Inline expressions in a feature file are typically well under a few hundred bytes. A `karate-config.js` is normally around 0.5–1.5 KB, and a substantial JS utility file is a few KB. Scripts in the tens of KB are rare outliers; for context, jQuery minified is 87 KB.
+Treat it as an architectural difference, not like-for-like. The engines defer different amounts of work: Karate's standard library lives in lazily-initialised JVM-wide singletons, so `new Engine()` allocates very little; Rhino's `initStandardObjects()` eagerly builds a full global environment; GraalJS does not initialise the JS language until something is evaluated, so its figure understates true first-use cost. Sharing an immutable standard library across contexts is a genuine design win here, and a shared GraalJS `Engine` is the closest analogue — which is why it is measured.
 
-So the sizes where GraalJS pulls ahead sit well outside the range Karate actually operates in.
+This row is also the noisiest in the suite. Treat its exact multiple as approximate.
+
+### Script sizes in practice
+
+Inline expressions in a feature file run to a few hundred bytes. A `karate-config.js` is normally 0.5–1.5 KB; a substantial JS utility file is a few KB. Tens of KB is a rare outlier — jQuery minified is 87 KB.
+
+So GraalJS pulls ahead at sizes above where Karate normally operates. That is the honest scope of Karate's advantage: real, and narrow.
 
 ## Running the Benchmark
 
@@ -95,14 +105,26 @@ Every measurement is the **median of 5 timed runs**, after a per-workload warmup
 
 ## Notes
 
-### Engine configuration — read this before quoting the numbers
+### Engine configuration
 
-Both competing engines are run in their **default** configuration, and in both cases that default is not necessarily their fastest for this workload:
+Five configurations are measured. Each competitor appears as its default and tuned.
 
-- **GraalJS runs interpreted.** On a stock JVM there is no JVMCI, so GraalJS never JIT-compiles. On GraalVM, or with JVMCI enabled, it would be significantly faster for long-running scripts.
-- **Rhino runs in compiled mode.** Rhino's default generates JVM bytecode and defines a class per evaluation. For parse-once-run-once workloads — which is exactly the fresh-context scenario benchmarked here — Rhino's *interpreted* mode (`Context.setInterpretedMode(true)`) skips that codegen and is typically much faster. A meaningful part of Rhino's cost in the fresh-context and large-script tables is bytecode compilation it never gets to amortise. **The Rhino numbers here should not be read as Rhino's best possible showing.**
+| Column | What it is |
+|---|---|
+| `Karate` | `new Engine().eval(source)` |
+| `Rhino` | Rhino's default — generates JVM bytecode and defines a class per evaluation |
+| `Rhino-int` | `cx.setInterpretedMode(true)` — no bytecode generation |
+| `Graal` | `Context.create()` — a private `Engine` per `Context` |
+| `Graal-shared` | one `Engine.create()` shared by every `Context`, so runtime setup and parsed-code cache are reused |
 
-Benchmarking each engine's *default* is a defensible choice and it is applied consistently, but if you are choosing an engine, tune each one before deciding.
+Both tuning changes are one-liners and both are large:
+
+- **Rhino interpreted mode is several times faster than Rhino's default** for parse-once-run-once. The default pays bytecode compilation on every evaluation and never amortises it. If you embed Rhino for short scripts, this is the single highest-value setting you can change.
+- **A shared GraalJS `Engine` cuts context-creation cost substantially** and dominates on larger scripts. Each `Context` still gets isolated globals, so this is not a semantic shortcut.
+
+GraalJS runs interpreted throughout — a stock JVM has no JVMCI, so it never JIT-compiles. On GraalVM these numbers would differ.
+
+`Karate vs best` always scores Karate against whichever non-Karate configuration was fastest for that row.
 
 ### Other caveats
 

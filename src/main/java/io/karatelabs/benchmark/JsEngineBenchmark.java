@@ -32,11 +32,17 @@ import java.io.PrintWriter;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
 
 /**
  * Performance benchmark comparing Karate's JavaScript engine against Rhino and GraalJS.
+ * <p>
+ * Every competing engine is measured in BOTH its default configuration and a tuned one,
+ * because for this workload - many small scripts, each in a fresh context - the defaults
+ * are not the engines' best showing, and publishing only the defaults would misrepresent
+ * them. See {@link #CONFIGS}.
  * <p>
  * Run with: mvn compile exec:java
  */
@@ -112,6 +118,169 @@ public class JsEngineBenchmark {
         output.sum + output.average;
         """;
 
+    /**
+     * A GraalJS Engine shared across Contexts. A shared Engine lets GraalJS reuse its
+     * runtime setup and parsed-code cache between contexts instead of rebuilding both
+     * every time - the closest GraalJS analogue to how Karate shares one immutable
+     * standard library across Engine instances. Each Context is still an isolated set
+     * of globals, so the comparison stays honest.
+     */
+    private static final org.graalvm.polyglot.Engine SHARED_GRAAL = org.graalvm.polyglot.Engine.newBuilder()
+            .option("engine.WarnInterpreterOnly", "false")
+            .build();
+
+    /**
+     * One engine configuration under test. {@link #evalFresh} must evaluate the source in
+     * a FRESH set of globals - that is the scenario the benchmark is built around.
+     */
+    private interface Config {
+        String label();
+
+        void evalFresh(String source);
+
+        /** Create and immediately discard a context, with no evaluation. */
+        void createContext();
+
+        /** A reusable context, for the context-reuse benchmark. Null if not applicable. */
+        default Reusable reusable() {
+            return null;
+        }
+    }
+
+    /** A context held open across many evaluations. */
+    private interface Reusable extends AutoCloseable {
+        void eval(String source);
+
+        @Override
+        default void close() {
+        }
+    }
+
+    private static final Config KARATE = new Config() {
+        public String label() {
+            return "Karate";
+        }
+
+        public void evalFresh(String source) {
+            new Engine().eval(source);
+        }
+
+        public void createContext() {
+            new Engine();
+        }
+
+        public Reusable reusable() {
+            Engine engine = new Engine();
+            return engine::eval;
+        }
+    };
+
+    /** Rhino in its DEFAULT mode: generates JVM bytecode and defines a class per evaluation. */
+    private static final Config RHINO = rhino(false, "Rhino");
+
+    /**
+     * Rhino in interpreted mode - skips bytecode generation and class definition entirely.
+     * For parse-once-run-once this is normally much faster than Rhino's default, which is
+     * why publishing only the default would understate Rhino.
+     */
+    private static final Config RHINO_INTERPRETED = rhino(true, "Rhino-int");
+
+    private static Config rhino(boolean interpreted, String label) {
+        return new Config() {
+            public String label() {
+                return label;
+            }
+
+            public void evalFresh(String source) {
+                org.mozilla.javascript.Context cx = enter();
+                try {
+                    org.mozilla.javascript.Scriptable scope = cx.initStandardObjects();
+                    cx.evaluateString(scope, source, "benchmark", 1, null);
+                } finally {
+                    org.mozilla.javascript.Context.exit();
+                }
+            }
+
+            public void createContext() {
+                org.mozilla.javascript.Context cx = enter();
+                try {
+                    cx.initStandardObjects();
+                } finally {
+                    org.mozilla.javascript.Context.exit();
+                }
+            }
+
+            public Reusable reusable() {
+                org.mozilla.javascript.Context cx = enter();
+                org.mozilla.javascript.Scriptable scope = cx.initStandardObjects();
+                return new Reusable() {
+                    public void eval(String source) {
+                        cx.evaluateString(scope, source, "benchmark", 1, null);
+                    }
+
+                    public void close() {
+                        org.mozilla.javascript.Context.exit();
+                    }
+                };
+            }
+
+            private org.mozilla.javascript.Context enter() {
+                org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.enter();
+                cx.setLanguageVersion(org.mozilla.javascript.Context.VERSION_ES6);
+                cx.setInterpretedMode(interpreted);
+                return cx;
+            }
+        };
+    }
+
+    /** GraalJS with a private Engine per Context - what you get from Context.create(). */
+    private static final Config GRAAL = graal(false, "Graal");
+
+    /** GraalJS with one Engine shared across all Contexts. */
+    private static final Config GRAAL_SHARED = graal(true, "Graal-shared");
+
+    private static Config graal(boolean shared, String label) {
+        return new Config() {
+            public String label() {
+                return label;
+            }
+
+            public void evalFresh(String source) {
+                try (org.graalvm.polyglot.Context ctx = build()) {
+                    ctx.eval("js", source);
+                }
+            }
+
+            public void createContext() {
+                build().close();
+            }
+
+            public Reusable reusable() {
+                org.graalvm.polyglot.Context ctx = build();
+                return new Reusable() {
+                    public void eval(String source) {
+                        ctx.eval("js", source);
+                    }
+
+                    public void close() {
+                        ctx.close();
+                    }
+                };
+            }
+
+            private org.graalvm.polyglot.Context build() {
+                org.graalvm.polyglot.Context.Builder b = org.graalvm.polyglot.Context.newBuilder("js");
+                // engine.* options belong on the Engine when one is shared, on the Context otherwise
+                return shared ? b.engine(SHARED_GRAAL).build()
+                        : b.option("engine.WarnInterpreterOnly", "false").build();
+            }
+        };
+    }
+
+    /** Column order for every table and for the CSV. Karate must stay first. */
+    private static final List<Config> CONFIGS = List.of(
+            KARATE, RHINO, RHINO_INTERPRETED, GRAAL, GRAAL_SHARED);
+
     private static final List<BenchmarkResult> results = new ArrayList<>();
 
     // versions come from the Maven-filtered benchmark.properties, never a hardcoded constant
@@ -138,22 +307,15 @@ public class JsEngineBenchmark {
 
         printHeader();
 
-        // Warmup all engines equally
         System.out.println("Warming up all engines...");
         warmup();
         System.out.println("Warmup complete.\n");
 
-        // Context creation overhead
         runContextCreationBenchmark();
-
-        // Engine comparison
         runEngineComparison();
 
-        // Write CSV
         String outputFile = csvFile != null ? csvFile : "target/benchmark.csv";
         writeCsv(outputFile);
-
-        // Write the markdown block CI splices into the README, alongside the CSV
         writeMarkdown(outputFile.replaceFirst("\\.csv$", "") + ".md");
     }
 
@@ -164,438 +326,214 @@ public class JsEngineBenchmark {
         System.out.println("╚══════════════════════════════════════════════════════════════════════════════════════════╝");
         System.out.println();
         System.out.println("Engines under test:");
-        System.out.println("  - Karate JS: Custom lightweight JavaScript engine (v" + version("karate.version") + ")");
-        System.out.println("  - Rhino:     Mozilla's JavaScript engine for Java (v" + version("rhino.version")
-                + ", ES6, compiled mode - Rhino's default)");
-        System.out.println("  - GraalJS:   Oracle's high-performance JS runtime (v" + version("graaljs.version") + ", interpreted mode)");
+        System.out.println("  - Karate        Karate's JS engine v" + version("karate.version"));
+        System.out.println("  - Rhino         Mozilla Rhino v" + version("rhino.version") + ", ES6, compiled mode (its DEFAULT)");
+        System.out.println("  - Rhino-int     the same, interpreted mode - no bytecode generation");
+        System.out.println("  - Graal         GraalJS v" + version("graaljs.version") + ", private Engine per Context (the DEFAULT)");
+        System.out.println("  - Graal-shared  the same, one Engine shared across Contexts");
         System.out.println();
         System.out.println("Java: " + System.getProperty("java.version") + " | OS: " + System.getProperty("os.name")
                 + " " + System.getProperty("os.arch") + " | CPUs: " + Runtime.getRuntime().availableProcessors());
         System.out.println();
-        System.out.println("All engines create a fresh context for each eval(), each in its DEFAULT");
-        System.out.println("configuration - which for Rhino and GraalJS is not necessarily their fastest.");
-        System.out.println("See the README 'Engine configuration' notes before quoting these numbers.");
+        System.out.println("GraalJS runs interpreted - a stock JVM has no JVMCI, so it never JIT-compiles.");
+        System.out.println("Both competitors are shown tuned as well as default; 'Best' is the fastest");
+        System.out.println("non-Karate configuration, which is what Karate is fairly compared against.");
         System.out.println();
     }
 
     private static void warmup() {
-        // Equal warmup for all engines
         for (int i = 0; i < 100; i++) {
-            new Engine().eval(JS_ARITHMETIC);
-            evalWithRhino(JS_ARITHMETIC);
-            try (org.graalvm.polyglot.Context ctx = createGraalContext()) {
-                ctx.eval("js", JS_ARITHMETIC);
+            for (Config c : CONFIGS) {
+                c.evalFresh(JS_ARITHMETIC);
             }
         }
     }
 
-    private static org.graalvm.polyglot.Context createGraalContext() {
-        return org.graalvm.polyglot.Context.newBuilder("js")
-                .option("engine.WarnInterpreterOnly", "false")
-                .build();
+    /** Median of 5 timed runs, in ms per iteration. */
+    private static double measure(int iterations, Runnable body) {
+        long[] times = new long[5];
+        for (int run = 0; run < 5; run++) {
+            long start = System.nanoTime();
+            for (int i = 0; i < iterations; i++) {
+                body.run();
+            }
+            times[run] = System.nanoTime() - start;
+        }
+        Arrays.sort(times);
+        return (times[2] / (double) iterations) / 1_000_000.0;
     }
 
     private static void runContextCreationBenchmark() {
-        System.out.println("═══════════════════════════════════════════════════════════════════════════════════════════");
-        System.out.println("                              CONTEXT CREATION OVERHEAD");
-        System.out.println("═══════════════════════════════════════════════════════════════════════════════════════════");
-
-        int iterations = 5000;
-
-        // Warmup context creation
-        for (int i = 0; i < 500; i++) {
-            new Engine();
-            org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.enter();
-            cx.initStandardObjects();
-            org.mozilla.javascript.Context.exit();
-            try (org.graalvm.polyglot.Context ctx = createGraalContext()) {
-                // just create and close
-            }
-        }
-
-        // Measure Karate context creation
-        long[] karateTimes = new long[5];
-        for (int run = 0; run < 5; run++) {
-            long start = System.nanoTime();
-            for (int i = 0; i < iterations; i++) {
-                new Engine();
-            }
-            karateTimes[run] = System.nanoTime() - start;
-        }
-        java.util.Arrays.sort(karateTimes);
-        double karateUs = (karateTimes[2] / (double) iterations) / 1_000.0;
-
-        // Measure Rhino context creation
-        long[] rhinoTimes = new long[5];
-        for (int run = 0; run < 5; run++) {
-            long start = System.nanoTime();
-            for (int i = 0; i < iterations; i++) {
-                org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.enter();
-                cx.initStandardObjects();
-                org.mozilla.javascript.Context.exit();
-            }
-            rhinoTimes[run] = System.nanoTime() - start;
-        }
-        java.util.Arrays.sort(rhinoTimes);
-        double rhinoUs = (rhinoTimes[2] / (double) iterations) / 1_000.0;
-
-        // Measure GraalJS context creation
-        long[] graalTimes = new long[5];
-        for (int run = 0; run < 5; run++) {
-            long start = System.nanoTime();
-            for (int i = 0; i < iterations; i++) {
-                try (org.graalvm.polyglot.Context ctx = createGraalContext()) {
-                    // just create and close
-                }
-            }
-            graalTimes[run] = System.nanoTime() - start;
-        }
-        java.util.Arrays.sort(graalTimes);
-        double graalUs = (graalTimes[2] / (double) iterations) / 1_000.0;
-
-        // Calculate ratios
-        double rhinoRatio = karateUs / rhinoUs;
-        String rhinoStr = rhinoRatio < 1 ? String.format("%.1fx faster", 1 / rhinoRatio) : String.format("%.1fx slower", rhinoRatio);
-        double graalRatio = karateUs / graalUs;
-        String graalStr = graalRatio < 1 ? String.format("%.1fx faster", 1 / graalRatio) : String.format("%.1fx slower", graalRatio);
-
-        System.out.printf("%-16s %11s %11s %11s %14s %14s%n",
-                "", "Karate (µs)", "Rhino (µs)", "Graal (µs)", "vs Rhino", "vs Graal");
-        System.out.println("───────────────────────────────────────────────────────────────────────────────────────────");
-        System.out.printf("%-16s %11.2f %11.2f %11.2f %14s %14s%n",
-                "Context Create", karateUs, rhinoUs, graalUs, rhinoStr, graalStr);
-        System.out.println("═══════════════════════════════════════════════════════════════════════════════════════════");
+        banner("CONTEXT CREATION OVERHEAD");
+        System.out.println("Cost of standing up a fresh set of globals, with nothing evaluated.");
+        System.out.println("NOTE: the engines defer different amounts of work here - see the README.");
         System.out.println();
 
-        // Store for CSV
-        results.add(new BenchmarkResult("ContextCreate", 0, karateUs / 1000.0, rhinoUs / 1000.0, graalUs / 1000.0));
+        int iterations = 5000;
+        for (int i = 0; i < 500; i++) {
+            for (Config c : CONFIGS) {
+                c.createContext();
+            }
+        }
+
+        double[] values = new double[CONFIGS.size()];
+        for (int i = 0; i < CONFIGS.size(); i++) {
+            Config c = CONFIGS.get(i);
+            values[i] = measure(iterations, c::createContext);
+        }
+
+        printRow("Context Create", values, true);
+        endBanner();
+        results.add(new BenchmarkResult("ContextCreate", 0, values));
     }
 
     private static void runEngineComparison() {
-        System.out.println("═══════════════════════════════════════════════════════════════════════════════════════════");
-        System.out.println("                                 SCRIPT EVALUATION");
-        System.out.println("═══════════════════════════════════════════════════════════════════════════════════════════");
-        System.out.printf("%-16s %11s %11s %11s %14s %14s%n",
-                "Workload", "Karate (ms)", "Rhino (ms)", "Graal (ms)", "vs Rhino", "vs Graal");
-        System.out.println("───────────────────────────────────────────────────────────────────────────────────────────");
-
+        banner("SCRIPT EVALUATION - Fresh context per eval");
+        printHeaderRow("Workload");
         runComparison("Arithmetic", JS_ARITHMETIC, 2000);
         runComparison("Strings", JS_STRINGS, 2000);
         runComparison("Objects", JS_OBJECTS, 1000);
         runComparison("Functions", JS_FUNCTIONS, 500);
         runComparison("Mixed", JS_MIXED, 500);
-        System.out.println("═══════════════════════════════════════════════════════════════════════════════════════════");
-        System.out.println();
+        endBanner();
 
-        // Context reuse comparison
         runContextReuseBenchmark();
-
-        // Large script scaling
         runLargeScriptBenchmark();
+    }
 
-        System.out.println("Legend: 'X.Xx faster' = Karate is X.X times faster than the compared engine");
-        System.out.println();
+    private static void runComparison(String name, String source, int iterations) {
+        for (int i = 0; i < 50; i++) {
+            for (Config c : CONFIGS) {
+                c.evalFresh(source);
+            }
+        }
+        double[] values = new double[CONFIGS.size()];
+        for (int i = 0; i < CONFIGS.size(); i++) {
+            Config c = CONFIGS.get(i);
+            values[i] = measure(iterations, () -> c.evalFresh(source));
+        }
+        printRow(name, values, false);
+        results.add(new BenchmarkResult(name, source.length(), values));
     }
 
     private static void runContextReuseBenchmark() {
-        System.out.println("═══════════════════════════════════════════════════════════════════════════════════════════");
-        System.out.println("                    CONTEXT REUSE - Same context, multiple evals");
-        System.out.println("═══════════════════════════════════════════════════════════════════════════════════════════");
-        System.out.println("Shows pure execution speed when context creation overhead is removed.");
-        System.out.printf("Script size: JS_MIXED = %d bytes (%.2f KB)%n",
-                JS_MIXED.length(), JS_MIXED.length() / 1024.0);
+        banner("CONTEXT REUSE - Same context, multiple evals");
+        System.out.println("Pure execution speed, with context creation removed. Karate's advantage");
+        System.out.println("comes from context creation, so this is where it is expected to lose.");
+        System.out.printf("Script size: JS_MIXED = %d bytes (%.2f KB)%n", JS_MIXED.length(), JS_MIXED.length() / 1024.0);
         System.out.println();
+        printHeaderRow("Workload");
 
-        // Wrap in IIFE to avoid 'let' redeclaration errors when reusing context
+        // IIFE-wrapped so repeated evals on one context don't hit 'let' redeclaration errors
         String wrappedMixed = "(function() {\n" + JS_MIXED + "\n})();";
         String wrappedArithmetic = "(function() {\n" + JS_ARITHMETIC + "\n})();";
-
         int iterations = 1000;
 
-        // Warmup with context reuse
-        Engine karateEngine = new Engine();
-        for (int i = 0; i < 100; i++) {
-            karateEngine.eval(wrappedArithmetic);
-        }
-        org.mozilla.javascript.Context rhinoCx = org.mozilla.javascript.Context.enter();
-        rhinoCx.setLanguageVersion(org.mozilla.javascript.Context.VERSION_ES6);
-        org.mozilla.javascript.Scriptable rhinoScope = rhinoCx.initStandardObjects();
-        for (int i = 0; i < 100; i++) {
-            rhinoCx.evaluateString(rhinoScope, wrappedArithmetic, "bench", 1, null);
-        }
-        org.mozilla.javascript.Context.exit();
-        org.graalvm.polyglot.Context graalCtx = createGraalContext();
-        for (int i = 0; i < 100; i++) {
-            graalCtx.eval("js", wrappedArithmetic);
-        }
-        graalCtx.close();
-
-        // Measure Karate with context reuse
-        karateEngine = new Engine();
-        long[] karateTimes = new long[5];
-        for (int run = 0; run < 5; run++) {
-            long start = System.nanoTime();
-            for (int i = 0; i < iterations; i++) {
-                karateEngine.eval(wrappedMixed);
+        double[] reuse = new double[CONFIGS.size()];
+        double[] noCache = new double[CONFIGS.size()];
+        for (int i = 0; i < CONFIGS.size(); i++) {
+            Config c = CONFIGS.get(i);
+            try (Reusable warm = c.reusable()) {
+                for (int j = 0; j < 100; j++) {
+                    warm.eval(wrappedArithmetic);
+                }
             }
-            karateTimes[run] = System.nanoTime() - start;
-        }
-        java.util.Arrays.sort(karateTimes);
-        double karateMs = (karateTimes[2] / (double) iterations) / 1_000_000.0;
-
-        // Measure Rhino with context reuse
-        rhinoCx = org.mozilla.javascript.Context.enter();
-        rhinoCx.setLanguageVersion(org.mozilla.javascript.Context.VERSION_ES6);
-        rhinoScope = rhinoCx.initStandardObjects();
-        long[] rhinoTimes = new long[5];
-        for (int run = 0; run < 5; run++) {
-            long start = System.nanoTime();
-            for (int i = 0; i < iterations; i++) {
-                rhinoCx.evaluateString(rhinoScope, wrappedMixed, "bench", 1, null);
+            try (Reusable r = c.reusable()) {
+                reuse[i] = measure(iterations, () -> r.eval(wrappedMixed));
             }
-            rhinoTimes[run] = System.nanoTime() - start;
-        }
-        org.mozilla.javascript.Context.exit();
-        java.util.Arrays.sort(rhinoTimes);
-        double rhinoMs = (rhinoTimes[2] / (double) iterations) / 1_000_000.0;
-
-        // Measure GraalJS with context reuse
-        graalCtx = createGraalContext();
-        long[] graalTimes = new long[5];
-        for (int run = 0; run < 5; run++) {
-            long start = System.nanoTime();
-            for (int i = 0; i < iterations; i++) {
-                graalCtx.eval("js", wrappedMixed);
+            // a distinct script each time, to defeat parsed-source caching
+            String prefix = "(function() { var _seed = ";
+            String suffix = ";\n" + JS_MIXED + "\n})();";
+            try (Reusable r = c.reusable()) {
+                int[] seed = {0};
+                noCache[i] = measure(iterations, () -> r.eval(prefix + seed[0]++ + suffix));
             }
-            graalTimes[run] = System.nanoTime() - start;
         }
-        graalCtx.close();
-        java.util.Arrays.sort(graalTimes);
-        double graalMs = (graalTimes[2] / (double) iterations) / 1_000_000.0;
-
-        double rhinoRatio = karateMs / rhinoMs;
-        String rhinoStr = rhinoRatio < 1 ? String.format("%.1fx faster", 1 / rhinoRatio) : String.format("%.1fx slower", rhinoRatio);
-        double graalRatio = karateMs / graalMs;
-        String graalStr = graalRatio < 1 ? String.format("%.1fx faster", 1 / graalRatio) : String.format("%.1fx slower", graalRatio);
-
-        System.out.printf("%-16s %11s %11s %11s %14s %14s%n",
-                "Workload", "Karate (ms)", "Rhino (ms)", "Graal (ms)", "vs Rhino", "vs Graal");
-        System.out.println("───────────────────────────────────────────────────────────────────────────────────────────");
-        System.out.printf("%-16s %11.4f %11.4f %11.4f %14s %14s%n",
-                "Mixed (reuse)", karateMs, rhinoMs, graalMs, rhinoStr, graalStr);
-
-        // Now test with randomized scripts to defeat source caching
-        String scriptPrefix = "(function() { var _seed = ";
-        String scriptSuffix = ";\n" + JS_MIXED + "\n})();";
-
-        // Measure Karate with randomized scripts
-        karateEngine = new Engine();
-        karateTimes = new long[5];
-        for (int run = 0; run < 5; run++) {
-            long start = System.nanoTime();
-            for (int i = 0; i < iterations; i++) {
-                karateEngine.eval(scriptPrefix + i + scriptSuffix);
-            }
-            karateTimes[run] = System.nanoTime() - start;
-        }
-        java.util.Arrays.sort(karateTimes);
-        double karateRandMs = (karateTimes[2] / (double) iterations) / 1_000_000.0;
-
-        // Measure Rhino with randomized scripts
-        rhinoCx = org.mozilla.javascript.Context.enter();
-        rhinoCx.setLanguageVersion(org.mozilla.javascript.Context.VERSION_ES6);
-        rhinoScope = rhinoCx.initStandardObjects();
-        rhinoTimes = new long[5];
-        for (int run = 0; run < 5; run++) {
-            long start = System.nanoTime();
-            for (int i = 0; i < iterations; i++) {
-                rhinoCx.evaluateString(rhinoScope, scriptPrefix + i + scriptSuffix, "bench", 1, null);
-            }
-            rhinoTimes[run] = System.nanoTime() - start;
-        }
-        org.mozilla.javascript.Context.exit();
-        java.util.Arrays.sort(rhinoTimes);
-        double rhinoRandMs = (rhinoTimes[2] / (double) iterations) / 1_000_000.0;
-
-        // Measure GraalJS with randomized scripts
-        graalCtx = createGraalContext();
-        graalTimes = new long[5];
-        for (int run = 0; run < 5; run++) {
-            long start = System.nanoTime();
-            for (int i = 0; i < iterations; i++) {
-                graalCtx.eval("js", scriptPrefix + i + scriptSuffix);
-            }
-            graalTimes[run] = System.nanoTime() - start;
-        }
-        graalCtx.close();
-        java.util.Arrays.sort(graalTimes);
-        double graalRandMs = (graalTimes[2] / (double) iterations) / 1_000_000.0;
-
-        double rhinoRandRatio = karateRandMs / rhinoRandMs;
-        String rhinoRandStr = rhinoRandRatio < 1 ? String.format("%.1fx faster", 1 / rhinoRandRatio) : String.format("%.1fx slower", rhinoRandRatio);
-        double graalRandRatio = karateRandMs / graalRandMs;
-        String graalRandStr = graalRandRatio < 1 ? String.format("%.1fx faster", 1 / graalRandRatio) : String.format("%.1fx slower", graalRandRatio);
-
-        System.out.printf("%-16s %11.4f %11.4f %11.4f %14s %14s%n",
-                "Mixed (no-cache)", karateRandMs, rhinoRandMs, graalRandMs, rhinoRandStr, graalRandStr);
-
-        System.out.println("═══════════════════════════════════════════════════════════════════════════════════════════");
-        System.out.println();
-
-        results.add(new BenchmarkResult("Mixed-Reuse", JS_MIXED.length(), karateMs, rhinoMs, graalMs));
-        results.add(new BenchmarkResult("Mixed-NoCache", JS_MIXED.length(), karateRandMs, rhinoRandMs, graalRandMs));
+        printRow("Mixed (reuse)", reuse, false);
+        printRow("Mixed (no-cache)", noCache, false);
+        endBanner();
+        results.add(new BenchmarkResult("Mixed-Reuse", JS_MIXED.length(), reuse));
+        results.add(new BenchmarkResult("Mixed-NoCache", JS_MIXED.length(), noCache));
     }
 
     private static void runLargeScriptBenchmark() {
-        System.out.println("═══════════════════════════════════════════════════════════════════════════════════════════");
-        System.out.println("                    LARGE SCRIPT SCALING - Fresh context per eval");
-        System.out.println("═══════════════════════════════════════════════════════════════════════════════════════════");
-        System.out.println("Tests how performance scales with script size (realistic JS with functions, loops, objects).");
+        banner("LARGE SCRIPT SCALING - Fresh context per eval");
+        System.out.println("How performance scales with script size. Note that real Karate scripts");
+        System.out.println("are far smaller than these - see the README.");
         System.out.println();
-
-        System.out.printf("%-16s %11s %11s %11s %14s %14s%n",
-                "Size", "Karate (ms)", "Rhino (ms)", "Graal (ms)", "vs Rhino", "vs Graal");
-        System.out.println("───────────────────────────────────────────────────────────────────────────────────────────");
+        printHeaderRow("Size");
 
         for (String sizeLabel : LargeScriptGenerator.getSizes()) {
             int targetBytes = LargeScriptGenerator.parseSize(sizeLabel);
             String script = LargeScriptGenerator.generate(targetBytes);
             int iterations = targetBytes > 20000 ? 20 : (targetBytes > 5000 ? 50 : 100);
 
-            // Warmup
             for (int i = 0; i < 10; i++) {
-                new Engine().eval(script);
-                evalWithRhino(script);
-                try (org.graalvm.polyglot.Context ctx = createGraalContext()) {
-                    ctx.eval("js", script);
+                for (Config c : CONFIGS) {
+                    c.evalFresh(script);
                 }
             }
-
-            // Measure Karate
-            long[] karateTimes = new long[5];
-            for (int run = 0; run < 5; run++) {
-                long start = System.nanoTime();
-                for (int i = 0; i < iterations; i++) {
-                    new Engine().eval(script);
-                }
-                karateTimes[run] = System.nanoTime() - start;
+            double[] values = new double[CONFIGS.size()];
+            for (int i = 0; i < CONFIGS.size(); i++) {
+                Config c = CONFIGS.get(i);
+                values[i] = measure(iterations, () -> c.evalFresh(script));
             }
-            java.util.Arrays.sort(karateTimes);
-            double karateMs = (karateTimes[2] / (double) iterations) / 1_000_000.0;
-
-            // Measure Rhino
-            long[] rhinoTimes = new long[5];
-            for (int run = 0; run < 5; run++) {
-                long start = System.nanoTime();
-                for (int i = 0; i < iterations; i++) {
-                    evalWithRhino(script);
-                }
-                rhinoTimes[run] = System.nanoTime() - start;
-            }
-            java.util.Arrays.sort(rhinoTimes);
-            double rhinoMs = (rhinoTimes[2] / (double) iterations) / 1_000_000.0;
-
-            // Measure GraalJS
-            long[] graalTimes = new long[5];
-            for (int run = 0; run < 5; run++) {
-                long start = System.nanoTime();
-                for (int i = 0; i < iterations; i++) {
-                    try (org.graalvm.polyglot.Context ctx = createGraalContext()) {
-                        ctx.eval("js", script);
-                    }
-                }
-                graalTimes[run] = System.nanoTime() - start;
-            }
-            java.util.Arrays.sort(graalTimes);
-            double graalMs = (graalTimes[2] / (double) iterations) / 1_000_000.0;
-
-            double rhinoRatio = karateMs / rhinoMs;
-            String rhinoStr = rhinoRatio < 1 ? String.format("%.1fx faster", 1 / rhinoRatio) : String.format("%.1fx slower", rhinoRatio);
-            double graalRatio = karateMs / graalMs;
-            String graalStr = graalRatio < 1 ? String.format("%.1fx faster", 1 / graalRatio) : String.format("%.1fx slower", graalRatio);
-
-            String actualSize = String.format("%s (%dB)", sizeLabel, script.length());
-            System.out.printf("%-16s %11.2f %11.2f %11.2f %14s %14s%n",
-                    actualSize, karateMs, rhinoMs, graalMs, rhinoStr, graalStr);
-
-            results.add(new BenchmarkResult("Large-" + sizeLabel, script.length(), karateMs, rhinoMs, graalMs));
+            printRow(sizeLabel, values, false);
+            results.add(new BenchmarkResult("Large-" + sizeLabel, script.length(), values));
         }
+        endBanner();
+    }
 
-        System.out.println("═══════════════════════════════════════════════════════════════════════════════════════════");
+    // ── console output ────────────────────────────────────────────────────────────────
+
+    private static final String LINE = "═".repeat(104);
+
+    private static void banner(String title) {
+        System.out.println(LINE);
+        System.out.println("  " + title);
+        System.out.println(LINE);
+    }
+
+    private static void endBanner() {
+        System.out.println(LINE);
         System.out.println();
     }
 
-    private static void runComparison(String name, String source, int iterations) {
-        // Per-test warmup for all engines equally
-        for (int i = 0; i < 50; i++) {
-            new Engine().eval(source);
-            evalWithRhino(source);
-            try (org.graalvm.polyglot.Context ctx = createGraalContext()) {
-                ctx.eval("js", source);
-            }
+    private static void printHeaderRow(String first) {
+        StringBuilder sb = new StringBuilder(String.format("%-16s", first));
+        for (Config c : CONFIGS) {
+            sb.append(String.format("%13s", c.label()));
         }
-
-        // Measure Karate
-        long[] karateTimes = new long[5];
-        for (int run = 0; run < 5; run++) {
-            long start = System.nanoTime();
-            for (int i = 0; i < iterations; i++) {
-                new Engine().eval(source);
-            }
-            karateTimes[run] = System.nanoTime() - start;
-        }
-        java.util.Arrays.sort(karateTimes);
-        double karateMs = (karateTimes[2] / (double) iterations) / 1_000_000.0;
-
-        // Measure Rhino
-        long[] rhinoTimes = new long[5];
-        for (int run = 0; run < 5; run++) {
-            long start = System.nanoTime();
-            for (int i = 0; i < iterations; i++) {
-                evalWithRhino(source);
-            }
-            rhinoTimes[run] = System.nanoTime() - start;
-        }
-        java.util.Arrays.sort(rhinoTimes);
-        double rhinoMs = (rhinoTimes[2] / (double) iterations) / 1_000_000.0;
-
-        // Measure GraalJS
-        long[] graalTimes = new long[5];
-        for (int run = 0; run < 5; run++) {
-            long start = System.nanoTime();
-            for (int i = 0; i < iterations; i++) {
-                try (org.graalvm.polyglot.Context ctx = createGraalContext()) {
-                    ctx.eval("js", source);
-                }
-            }
-            graalTimes[run] = System.nanoTime() - start;
-        }
-        java.util.Arrays.sort(graalTimes);
-        double graalMs = (graalTimes[2] / (double) iterations) / 1_000_000.0;
-
-        // Calculate ratios
-        double rhinoRatio = karateMs / rhinoMs;
-        String rhinoStr = rhinoRatio < 1 ? String.format("%.1fx faster", 1 / rhinoRatio) : String.format("%.1fx slower", rhinoRatio);
-        double graalRatio = karateMs / graalMs;
-        String graalStr = graalRatio < 1 ? String.format("%.1fx faster", 1 / graalRatio) : String.format("%.1fx slower", graalRatio);
-
-        System.out.printf("%-16s %11.4f %11.4f %11.4f %14s %14s%n",
-                name, karateMs, rhinoMs, graalMs, rhinoStr, graalStr);
-
-        // Store for CSV
-        results.add(new BenchmarkResult(name, source.length(), karateMs, rhinoMs, graalMs));
+        sb.append("   ").append("Karate vs best");
+        System.out.println(sb);
+        System.out.println("─".repeat(104));
     }
 
-    private static Object evalWithRhino(String source) {
-        org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.enter();
-        try {
-            cx.setLanguageVersion(org.mozilla.javascript.Context.VERSION_ES6);
-            org.mozilla.javascript.Scriptable scope = cx.initStandardObjects();
-            return cx.evaluateString(scope, source, "benchmark", 1, null);
-        } finally {
-            org.mozilla.javascript.Context.exit();
+    /** @param micros print in µs rather than ms (context creation is sub-microsecond for Karate) */
+    private static void printRow(String name, double[] values, boolean micros) {
+        StringBuilder sb = new StringBuilder(String.format("%-16s", name));
+        for (double v : values) {
+            sb.append(String.format(micros ? "%13.2f" : "%13.4f", micros ? v * 1000 : v));
         }
+        sb.append("   ").append(vsBest(values));
+        System.out.println(sb);
     }
+
+    /** Karate measured against the fastest non-Karate configuration, named. */
+    private static String vsBest(double[] values) {
+        int best = 1;
+        for (int i = 2; i < values.length; i++) {
+            if (values[i] < values[best]) {
+                best = i;
+            }
+        }
+        double r = values[0] / values[best];
+        String label = CONFIGS.get(best).label();
+        return (r < 1 ? String.format("%.1fx faster", 1 / r) : String.format("%.1fx slower", r))
+                + " (" + label + ")";
+    }
+
+    // ── file output ───────────────────────────────────────────────────────────────────
 
     private static void writeCsv(String filename) {
         try {
@@ -605,7 +543,12 @@ public class JsEngineBenchmark {
                 parent.mkdirs();
             }
             try (PrintWriter pw = new PrintWriter(new FileWriter(file))) {
-                pw.println(BenchmarkResult.csvHeader());
+                StringBuilder header = new StringBuilder("timestamp,workload,chars");
+                for (Config c : CONFIGS) {
+                    header.append(',').append(c.label().toLowerCase().replace('-', '_')).append("_ms");
+                }
+                header.append(",best_other,karate_vs_best");
+                pw.println(header);
                 for (BenchmarkResult r : results) {
                     pw.println(r.toCsv());
                 }
@@ -617,7 +560,7 @@ public class JsEngineBenchmark {
     }
 
     /**
-     * Emits the machine-generated block that CI splices into the README between the
+     * Emits the machine-generated block that goes into the README between the
      * BENCHMARK:START / BENCHMARK:END markers. The README's prose is hand-written and
      * lives outside those markers - never edit the numbers by hand, re-run instead.
      */
@@ -630,25 +573,35 @@ public class JsEngineBenchmark {
                 + Runtime.getRuntime().availableProcessors() + " CPUs")).append(" |\n");
         sb.append("| Java | ").append(System.getProperty("java.version"))
                 .append(" (").append(System.getProperty("java.vm.name")).append(") |\n");
+        String commit = env("bench.karate.commit", "");
         sb.append("| Karate JS | ").append(version("karate.version"))
-                .append(env("bench.karate.commit", "").isEmpty() ? ""
-                        : " (built from source, commit `" + env("bench.karate.commit", "") + "`)").append(" |\n");
-        sb.append("| Rhino | ").append(version("rhino.version"))
-                .append(" (ES6, compiled mode — Rhino's default; see Notes) |\n");
-        sb.append("| GraalJS | ").append(version("graaljs.version"))
-                .append(" (Community Edition, interpreted mode) |\n");
+                .append(commit.isEmpty() ? "" : ", built from source at `" + commit + "`").append(" |\n");
+        sb.append("| Rhino | ").append(version("rhino.version")).append(" |\n");
+        sb.append("| GraalJS | ").append(version("graaljs.version")).append(" (Community Edition) |\n");
         sb.append("| Run | ").append(env("bench.run", LocalDateTime.now()
                 .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + " (local)")).append(" |\n\n");
+
+        sb.append("Each competitor appears twice — in its default configuration, and tuned for this ")
+                .append("workload. **Karate vs best** compares Karate against whichever non-Karate ")
+                .append("configuration was fastest for that row, so Karate is never flattered by a ")
+                .append("competitor's suboptimal default.\n\n");
 
         BenchmarkResult ctx = find("ContextCreate");
         if (ctx != null) {
             sb.append("### Context Creation Overhead\n\n");
-            sb.append("| | Karate (µs) | Rhino (µs) | Graal (µs) | vs Rhino | vs Graal |\n");
-            sb.append("|---|---|---|---|---|---|\n");
-            sb.append(String.format("| Context Create | %.2f | %.2f | %.2f | %s | %s |%n",
-                    ctx.karateMs() * 1000, ctx.rhinoMs() * 1000, ctx.graalMs() * 1000,
-                    ratio(ctx.karateMs(), ctx.rhinoMs()), ratio(ctx.karateMs(), ctx.graalMs())));
-            sb.append('\n');
+            sb.append("Cost of a fresh set of globals, nothing evaluated. The engines defer different ")
+                    .append("amounts of work, so read this as an architectural difference rather than a ")
+                    .append("like-for-like measurement — see the Analysis section.\n\n");
+            sb.append("| |");
+            for (Config c : CONFIGS) {
+                sb.append(' ').append(c.label()).append(" (µs) |");
+            }
+            sb.append(" Karate vs best |\n|").append("---|".repeat(CONFIGS.size() + 2)).append('\n');
+            sb.append("| Context Create |");
+            for (double v : ctx.values()) {
+                sb.append(String.format(" %.2f |", v * 1000));
+            }
+            sb.append(' ').append(vsBest(ctx.values())).append(" |\n\n");
         }
 
         mdTable(sb, "Script Evaluation (Fresh Context)", "Workload",
@@ -675,16 +628,23 @@ public class JsEngineBenchmark {
 
     private static void mdTable(StringBuilder sb, String title, String firstCol, List<String> names) {
         sb.append("### ").append(title).append("\n\n");
-        sb.append("| ").append(firstCol).append(" | Bytes | Karate (ms) | Rhino (ms) | Graal (ms) | vs Rhino | vs Graal |\n");
-        sb.append("|---|---|---|---|---|---|---|\n");
+        sb.append("| ").append(firstCol).append(" | Bytes |");
+        for (Config c : CONFIGS) {
+            sb.append(' ').append(c.label()).append(" (ms) |");
+        }
+        sb.append(" Karate vs best |\n|").append("---|".repeat(CONFIGS.size() + 3)).append('\n');
         for (String name : names) {
             BenchmarkResult r = find(name);
             if (r == null) {
+                // a renamed workload would silently vanish from the table - say so instead
+                System.err.println("WARNING: no result for '" + name + "', omitted from " + title);
                 continue;
             }
-            sb.append(String.format("| %s | %d B | %.4f | %.4f | %.4f | %s | %s |%n",
-                    name.replace("Large-", ""), r.chars(), r.karateMs(), r.rhinoMs(), r.graalMs(),
-                    ratio(r.karateMs(), r.rhinoMs()), ratio(r.karateMs(), r.graalMs())));
+            sb.append("| ").append(name.replace("Large-", "")).append(" | ").append(r.chars()).append(" |");
+            for (double v : r.values()) {
+                sb.append(String.format(" %.4f |", v));
+            }
+            sb.append(' ').append(vsBest(r.values())).append(" |\n");
         }
         sb.append('\n');
     }
@@ -699,31 +659,24 @@ public class JsEngineBenchmark {
         return value == null || value.isBlank() ? fallback : value;
     }
 
-    /** Wins and losses get identical emphasis - bolding only the wins reads as cherry-picking. */
-    private static String ratio(double karate, double other) {
-        double r = karate / other;
-        return r < 1 ? String.format("%.1fx faster", 1 / r) : String.format("%.1fx slower", r);
-    }
-
-    private record BenchmarkResult(
-            String name,
-            int chars,
-            double karateMs,
-            double rhinoMs,
-            double graalMs
-    ) {
-        static String csvHeader() {
-            return "timestamp,workload,chars,karate_ms,rhino_ms,graal_ms,vs_rhino,vs_graal";
-        }
+    private record BenchmarkResult(String name, int chars, double[] values) {
 
         String toCsv() {
             String ts = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
-            double vsRhino = karateMs / rhinoMs;
-            double vsGraal = karateMs / graalMs;
-            // 6dp - ContextCreate is ~0.00003 ms and rounded away to 0.0000 at 4dp, which
-            // silently destroyed the headline number in the archived CSV
-            return String.format("%s,%s,%d,%.6f,%.6f,%.6f,%.5f,%.5f",
-                    ts, name, chars, karateMs, rhinoMs, graalMs, vsRhino, vsGraal);
+            StringBuilder sb = new StringBuilder(String.format("%s,%s,%d", ts, name, chars));
+            for (double v : values) {
+                // 6dp - context creation is ~0.00003 ms and rounds away to 0.0000 at 4dp
+                sb.append(String.format(",%.6f", v));
+            }
+            int best = 1;
+            for (int i = 2; i < values.length; i++) {
+                if (values[i] < values[best]) {
+                    best = i;
+                }
+            }
+            sb.append(',').append(CONFIGS.get(best).label());
+            sb.append(String.format(",%.5f", values[0] / values[best]));
+            return sb.toString();
         }
     }
 
