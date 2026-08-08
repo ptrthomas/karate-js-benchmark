@@ -75,6 +75,9 @@ jobs:
         # maven failure and this step goes green with an empty benchmark.md
         shell: bash
         run: |
+          # tee opens its output when the shell builds the pipeline, BEFORE maven runs -
+          # so target/ has to exist already or tee fails and pipefail fails the step
+          mkdir -p target
           mvn -B -q compile exec:java \
             -Dexec.args=target/benchmark.csv \
             -Dbench.machine="${{ steps.machine.outputs.desc }}" \
