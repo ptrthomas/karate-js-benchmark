@@ -133,7 +133,7 @@ Each run writes a CSV and a markdown block (`target/benchmark.csv` and `target/b
 
 ### Run on CI
 
-The canonical run is `workflow_dispatch` on the [`benchmark` workflow](.github/workflows/benchmark.yml), which also runs weekly. It takes a `karate_ref` input if you want to benchmark a branch other than `main`.
+The canonical run is `workflow_dispatch` on the [`benchmark` workflow](.github/workflows/benchmark.yml) — on demand, not scheduled. It takes a `karate_ref` input if you want to benchmark a branch other than `main`.
 
 The workflow does **not** write to this repo. It publishes the results to the run's job summary (rendered, plus a paste-ready block and the full console output) and as a `benchmark-results` artifact.
 

@@ -8,6 +8,8 @@ name: benchmark
 # the job summary and as artifacts; refreshing the README is a MANUAL commit by a human
 # (or an LLM) who pulls the block from a specific run - so every numbers change in git
 # history is traceable to a person and a run id. See README "Updating the results".
+# On-demand only. There is no schedule: results are refreshed when someone revisits
+# the repo with a reason to, not on a timer nobody reads.
 on:
   workflow_dispatch:
     inputs:
@@ -15,9 +17,6 @@ on:
         description: 'karatelabs/karate ref to build karate-js from'
         required: false
         default: 'main'
-  schedule:
-    # weekly, Monday 06:00 UTC
-    - cron: '0 6 * * 1'
 
 permissions:
   contents: read
