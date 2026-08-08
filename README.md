@@ -141,14 +141,34 @@ The workflow does **not** write to this repo. It publishes the results to the ru
 
 Refreshing the Results section is a deliberate manual commit, so every numbers change in git history traces back to a person and a run id:
 
-1. Run the workflow and open the run page.
-2. Either copy the paste-ready block from the job summary into the `BENCHMARK:START` / `BENCHMARK:END` markers, or download the artifact and splice it in:
-   ```bash
-   gh run download <run-id> -n benchmark-results -D /tmp/bench
-   ./etc/update-readme.py README.md /tmp/bench/benchmark.md
-   cp /tmp/bench/benchmark.csv results/benchmark-<karate-version>-ci.csv
-   ```
-3. Commit both, referencing the run id.
+```bash
+# 1. check the version pin first - CI fails fast if these disagree
+grep karate.version pom.xml
+#    compare against <version> in karatelabs/karate's root pom.xml on main,
+#    and update pom.xml if it has moved
+
+# 2. run it, wait for green
+gh workflow run benchmark.yml --ref main
+gh run list --workflow=benchmark.yml --limit 1        # note the run id
+gh run watch <run-id> --exit-status
+
+# 3. splice the generated block into the Results section
+gh run download <run-id> -n benchmark-results -D /tmp/bench
+./etc/update-readme.py README.md /tmp/bench/benchmark.md
+cp /tmp/bench/benchmark.csv results/benchmark-<karate-version>-ci.csv
+
+# 4. commit both, citing the run id
+```
+
+**Then re-read the Analysis section and fix it to match.** This is the step that gets missed. `update-readme.py` only rewrites what sits between the markers; the Analysis and Notes prose is hand-written, sits *outside* them, and quotes specific multiples ("roughly 1.5–2.4x", "around 2x on context creation") plus a conclusion about which engine wins. If the new numbers move, that prose silently becomes wrong, and wrong in the most embarrassing direction — a published claim contradicted by the table directly above it.
+
+So after splicing, check at minimum:
+
+- Does `Karate vs best` still name the same winner on every row? If the winning configuration changed, the Analysis headline is wrong.
+- Do the quoted ranges still bracket the actual numbers?
+- Does the intro paragraph still describe the right outcome?
+
+The numbers are allowed to say whatever they say. Publish them either way — that is the entire point of this repo, and the reason the current README leads with `karate-js` losing.
 
 ## Benchmark Categories
 
