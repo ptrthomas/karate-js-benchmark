@@ -1,0 +1,120 @@
+name: benchmark
+
+# The canonical benchmark run. Numbers in the README come from HERE, never from a
+# developer laptop - a GitHub-hosted runner gives every run the same hardware class,
+# so results stay comparable across engine versions.
+#
+# This workflow deliberately does NOT write to the repo. It publishes the results to
+# the job summary and as artifacts; refreshing the README is a MANUAL commit by a human
+# (or an LLM) who pulls the block from a specific run - so every numbers change in git
+# history is traceable to a person and a run id. See README "Updating the results".
+on:
+  workflow_dispatch:
+    inputs:
+      karate_ref:
+        description: 'karatelabs/karate ref to build karate-js from'
+        required: false
+        default: 'main'
+  schedule:
+    # weekly, Monday 06:00 UTC
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout karatelabs/karate
+        uses: actions/checkout@v4
+        with:
+          repository: karatelabs/karate
+          ref: ${{ github.event.inputs.karate_ref || 'main' }}
+          path: karate
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Record the runner
+        id: machine
+        run: |
+          # 'model name' is x86-only; ARM runners expose 'Model name' via lscpu instead
+          CPU=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs || true)
+          [ -n "$CPU" ] || CPU=$(lscpu | grep -m1 -i 'model name' | cut -d: -f2 | xargs || true)
+          [ -n "$CPU" ] || CPU='unknown CPU'
+          CORES=$(nproc)
+          MEM=$(awk '/MemTotal/ {printf "%.0f GB", $2/1024/1024}' /proc/meminfo)
+          echo "desc=$CPU, $CORES vCPU, $MEM ($ImageOS, $RUNNER_ARCH)" >> "$GITHUB_OUTPUT"
+          echo "karate_sha=$(git -C karate rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # cheap, so it runs BEFORE the multi-minute build - a mismatch fails in seconds
+      - name: Verify version pin
+        run: |
+          SRC=$(mvn -B -q -f karate/pom.xml help:evaluate -Dexpression=project.version -DforceStdout)
+          OURS=$(mvn -B -q help:evaluate -Dexpression=karate.version -DforceStdout)
+          if [ "$SRC" != "$OURS" ]; then
+            echo "::error::karate main is $SRC but pom.xml pins karate.version=$OURS - update the pom"
+            exit 1
+          fi
+
+      # karate-js is built from source, NOT taken from Maven Central - Central lags main
+      # by months. -am is REQUIRED: it also installs the karate-parent pom, which karate-js
+      # declares as its parent and which is NOT published to Central for RC versions. Without
+      # it this succeeds here but the benchmark build then fails to resolve karate-js.
+      - name: Build karate-js from source
+        run: mvn -B -q -f karate/pom.xml -pl karate-js -am install -DskipTests
+
+      - name: Run benchmark
+        # bash (not the default bash -e) so pipefail applies - otherwise tee swallows a
+        # maven failure and this step goes green with an empty benchmark.md
+        shell: bash
+        run: |
+          mvn -B -q compile exec:java \
+            -Dexec.args=target/benchmark.csv \
+            -Dbench.machine="${{ steps.machine.outputs.desc }}" \
+            -Dbench.karate.commit="${{ steps.machine.outputs.karate_sha }}" \
+            -Dbench.run="[GitHub Actions run ${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" \
+            | tee target/benchmark.txt
+
+      # the block a human/LLM copies into the README, readable straight off the run page
+      - name: Publish to job summary
+        run: |
+          {
+            echo '## Benchmark results'
+            echo
+            cat target/benchmark.md
+            echo
+            echo '<details><summary>Paste-ready README block</summary>'
+            echo
+            echo '```markdown'
+            cat target/benchmark.md
+            echo '```'
+            echo
+            echo '</details>'
+            echo
+            echo '<details><summary>Console output</summary>'
+            echo
+            echo '```'
+            cat target/benchmark.txt
+            echo '```'
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # always() - on a failed run benchmark.txt holds the maven error, which is the one
+      # thing worth having
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results
+          if-no-files-found: warn
+          path: |
+            target/benchmark.csv
+            target/benchmark.md
+            target/benchmark.txt

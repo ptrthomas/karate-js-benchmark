@@ -27,11 +27,13 @@ import io.karatelabs.js.Engine;
 
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintWriter;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 
 /**
  * Performance benchmark comparing Karate's JavaScript engine against Rhino and GraalJS.
@@ -110,9 +112,26 @@ public class JsEngineBenchmark {
         output.sum + output.average;
         """;
 
-    private static final String JS_COMBINED = JS_ARITHMETIC + JS_STRINGS + JS_OBJECTS + JS_FUNCTIONS + JS_MIXED;
-
     private static final List<BenchmarkResult> results = new ArrayList<>();
+
+    // versions come from the Maven-filtered benchmark.properties, never a hardcoded constant
+    private static final Properties VERSIONS = loadVersions();
+
+    private static Properties loadVersions() {
+        Properties props = new Properties();
+        try (InputStream is = JsEngineBenchmark.class.getResourceAsStream("/benchmark.properties")) {
+            if (is != null) {
+                props.load(is);
+            }
+        } catch (IOException e) {
+            // fall through, versions just print as 'unknown'
+        }
+        return props;
+    }
+
+    private static String version(String key) {
+        return VERSIONS.getProperty(key, "unknown");
+    }
 
     public static void main(String[] args) {
         String csvFile = args.length > 0 ? args[0] : null;
@@ -133,6 +152,9 @@ public class JsEngineBenchmark {
         // Write CSV
         String outputFile = csvFile != null ? csvFile : "target/benchmark.csv";
         writeCsv(outputFile);
+
+        // Write the markdown block CI splices into the README, alongside the CSV
+        writeMarkdown(outputFile.replaceFirst("\\.csv$", "") + ".md");
     }
 
     private static void printHeader() {
@@ -142,11 +164,17 @@ public class JsEngineBenchmark {
         System.out.println("╚══════════════════════════════════════════════════════════════════════════════════════════╝");
         System.out.println();
         System.out.println("Engines under test:");
-        System.out.println("  - Karate JS: Custom lightweight JavaScript engine (v2.0.0.RC1)");
-        System.out.println("  - Rhino:     Mozilla's JavaScript engine for Java (v1.9.0)");
-        System.out.println("  - GraalJS:   Oracle's high-performance JS runtime (v25.0.2, interpreted mode)");
+        System.out.println("  - Karate JS: Custom lightweight JavaScript engine (v" + version("karate.version") + ")");
+        System.out.println("  - Rhino:     Mozilla's JavaScript engine for Java (v" + version("rhino.version")
+                + ", ES6, compiled mode - Rhino's default)");
+        System.out.println("  - GraalJS:   Oracle's high-performance JS runtime (v" + version("graaljs.version") + ", interpreted mode)");
         System.out.println();
-        System.out.println("All engines create a fresh context for each eval() - apples to apples comparison.");
+        System.out.println("Java: " + System.getProperty("java.version") + " | OS: " + System.getProperty("os.name")
+                + " " + System.getProperty("os.arch") + " | CPUs: " + Runtime.getRuntime().availableProcessors());
+        System.out.println();
+        System.out.println("All engines create a fresh context for each eval(), each in its DEFAULT");
+        System.out.println("configuration - which for Rhino and GraalJS is not necessarily their fastest.");
+        System.out.println("See the README 'Engine configuration' notes before quoting these numbers.");
         System.out.println();
     }
 
@@ -274,9 +302,8 @@ public class JsEngineBenchmark {
         System.out.println("                    CONTEXT REUSE - Same context, multiple evals");
         System.out.println("═══════════════════════════════════════════════════════════════════════════════════════════");
         System.out.println("Shows pure execution speed when context creation overhead is removed.");
-        System.out.printf("Script size: JS_MIXED = %d bytes (%.2f KB), JS_COMBINED = %d bytes (%.2f KB)%n",
-                JS_MIXED.length(), JS_MIXED.length() / 1024.0,
-                JS_COMBINED.length(), JS_COMBINED.length() / 1024.0);
+        System.out.printf("Script size: JS_MIXED = %d bytes (%.2f KB)%n",
+                JS_MIXED.length(), JS_MIXED.length() / 1024.0);
         System.out.println();
 
         // Wrap in IIFE to avoid 'let' redeclaration errors when reusing context
@@ -589,6 +616,95 @@ public class JsEngineBenchmark {
         }
     }
 
+    /**
+     * Emits the machine-generated block that CI splices into the README between the
+     * BENCHMARK:START / BENCHMARK:END markers. The README's prose is hand-written and
+     * lives outside those markers - never edit the numbers by hand, re-run instead.
+     */
+    private static void writeMarkdown(String filename) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("### Test Environment\n\n");
+        sb.append("| | |\n|---|---|\n");
+        sb.append("| Machine | ").append(env("bench.machine", System.getProperty("os.name")
+                + " " + System.getProperty("os.arch") + ", "
+                + Runtime.getRuntime().availableProcessors() + " CPUs")).append(" |\n");
+        sb.append("| Java | ").append(System.getProperty("java.version"))
+                .append(" (").append(System.getProperty("java.vm.name")).append(") |\n");
+        sb.append("| Karate JS | ").append(version("karate.version"))
+                .append(env("bench.karate.commit", "").isEmpty() ? ""
+                        : " (built from source, commit `" + env("bench.karate.commit", "") + "`)").append(" |\n");
+        sb.append("| Rhino | ").append(version("rhino.version"))
+                .append(" (ES6, compiled mode — Rhino's default; see Notes) |\n");
+        sb.append("| GraalJS | ").append(version("graaljs.version"))
+                .append(" (Community Edition, interpreted mode) |\n");
+        sb.append("| Run | ").append(env("bench.run", LocalDateTime.now()
+                .format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + " (local)")).append(" |\n\n");
+
+        BenchmarkResult ctx = find("ContextCreate");
+        if (ctx != null) {
+            sb.append("### Context Creation Overhead\n\n");
+            sb.append("| | Karate (µs) | Rhino (µs) | Graal (µs) | vs Rhino | vs Graal |\n");
+            sb.append("|---|---|---|---|---|---|\n");
+            sb.append(String.format("| Context Create | %.2f | %.2f | %.2f | %s | %s |%n",
+                    ctx.karateMs() * 1000, ctx.rhinoMs() * 1000, ctx.graalMs() * 1000,
+                    ratio(ctx.karateMs(), ctx.rhinoMs()), ratio(ctx.karateMs(), ctx.graalMs())));
+            sb.append('\n');
+        }
+
+        mdTable(sb, "Script Evaluation (Fresh Context)", "Workload",
+                List.of("Arithmetic", "Strings", "Objects", "Functions", "Mixed"));
+        mdTable(sb, "Context Reuse (Pure Execution Speed)", "Workload",
+                List.of("Mixed-Reuse", "Mixed-NoCache"));
+        mdTable(sb, "Large Script Scaling (Fresh Context per Eval)", "Target",
+                List.of("Large-1KB", "Large-5KB", "Large-10KB", "Large-50KB", "Large-100KB"));
+
+        try {
+            java.io.File file = new java.io.File(filename);
+            java.io.File parent = file.getParentFile();
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs();
+            }
+            try (PrintWriter pw = new PrintWriter(new FileWriter(file))) {
+                pw.print(sb);
+            }
+            System.out.println("Markdown written to: " + file.getAbsolutePath());
+        } catch (IOException e) {
+            System.err.println("Failed to write markdown: " + e.getMessage());
+        }
+    }
+
+    private static void mdTable(StringBuilder sb, String title, String firstCol, List<String> names) {
+        sb.append("### ").append(title).append("\n\n");
+        sb.append("| ").append(firstCol).append(" | Bytes | Karate (ms) | Rhino (ms) | Graal (ms) | vs Rhino | vs Graal |\n");
+        sb.append("|---|---|---|---|---|---|---|\n");
+        for (String name : names) {
+            BenchmarkResult r = find(name);
+            if (r == null) {
+                continue;
+            }
+            sb.append(String.format("| %s | %d B | %.4f | %.4f | %.4f | %s | %s |%n",
+                    name.replace("Large-", ""), r.chars(), r.karateMs(), r.rhinoMs(), r.graalMs(),
+                    ratio(r.karateMs(), r.rhinoMs()), ratio(r.karateMs(), r.graalMs())));
+        }
+        sb.append('\n');
+    }
+
+    private static BenchmarkResult find(String name) {
+        return results.stream().filter(r -> r.name().equals(name)).findFirst().orElse(null);
+    }
+
+    /** CI passes the runner facts in as -D system properties; locally they fall back to the JVM's own view. */
+    private static String env(String key, String fallback) {
+        String value = System.getProperty(key);
+        return value == null || value.isBlank() ? fallback : value;
+    }
+
+    /** Wins and losses get identical emphasis - bolding only the wins reads as cherry-picking. */
+    private static String ratio(double karate, double other) {
+        double r = karate / other;
+        return r < 1 ? String.format("%.1fx faster", 1 / r) : String.format("%.1fx slower", r);
+    }
+
     private record BenchmarkResult(
             String name,
             int chars,
@@ -604,7 +720,9 @@ public class JsEngineBenchmark {
             String ts = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
             double vsRhino = karateMs / rhinoMs;
             double vsGraal = karateMs / graalMs;
-            return String.format("%s,%s,%d,%.4f,%.4f,%.4f,%.2f,%.2f",
+            // 6dp - ContextCreate is ~0.00003 ms and rounded away to 0.0000 at 4dp, which
+            // silently destroyed the headline number in the archived CSV
+            return String.format("%s,%s,%d,%.6f,%.6f,%.6f,%.5f,%.5f",
                     ts, name, chars, karateMs, rhinoMs, graalMs, vsRhino, vsGraal);
         }
     }

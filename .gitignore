@@ -21,5 +21,6 @@ release.properties
 .DS_Store
 Thumbs.db
 
-# Benchmark output
+# Benchmark output - transient CSVs are ignored, the archived ones in results/ are not
 *.csv
+!results/*.csv

@@ -17,9 +17,15 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <karate.version>2.0.0.RC1</karate.version>
-        <rhino.version>1.9.0</rhino.version>
-        <graaljs.version>25.0.2</graaljs.version>
+        <!-- karate-js is NOT taken from Maven Central - it is built from a local checkout of
+             karatelabs/karate (main) by build.sh, which installs it into ~/.m2 at this version.
+             Keep this in sync with the <version> in that repo's root pom.xml. -->
+        <karate.version>2.1.2.RC1</karate.version>
+        <rhino.version>1.9.1</rhino.version>
+        <graaljs.version>25.2.4</graaljs.version>
+        <!-- benchmark CSV output path, overridable with -Dexec.args; the markdown block is
+             written alongside it with a .md extension -->
+        <exec.args>target/benchmark.csv</exec.args>
     </properties>
 
     <dependencies>
@@ -59,6 +65,14 @@
     </dependencies>
 
     <build>
+        <!-- the engine versions are reported at runtime from this filtered file, never a hardcoded
+             constant - so a version bump is a one-line edit in <properties> above -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
