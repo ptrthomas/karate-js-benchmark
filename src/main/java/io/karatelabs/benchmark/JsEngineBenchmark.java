@@ -201,8 +201,7 @@ public class JsEngineBenchmark {
         org.mozilla.javascript.Context cx = org.mozilla.javascript.Context.enter();
         try {
             cx.setInterpretedMode(true);
-            // full (not "safe") standard objects - Karate's engine ships Java interop too
-            org.mozilla.javascript.ScriptableObject root = cx.initStandardObjects(null, true);
+            org.mozilla.javascript.ScriptableObject root = cx.initSafeStandardObjects(null, true);
             root.sealObject();
             return root;
         } finally {
@@ -251,7 +250,7 @@ public class JsEngineBenchmark {
             /** A fresh top-level scope - either built from scratch, or prototyped off the sealed root. */
             private org.mozilla.javascript.Scriptable newScope(org.mozilla.javascript.Context cx) {
                 if (!sharedScope) {
-                    return cx.initStandardObjects();
+                    return cx.initSafeStandardObjects();
                 }
                 org.mozilla.javascript.Scriptable scope = cx.newObject(RHINO_SEALED_ROOT);
                 scope.setPrototype(RHINO_SEALED_ROOT);

@@ -19,22 +19,35 @@ All numbers below are produced by the [`benchmark` workflow](.github/workflows/b
 
 ### The headline: a tuned Rhino is faster than `karate-js`
 
-On this benchmark, Rhino in interpreted mode with a shared sealed root scope (`Rhino-best`) beats `karate-js` on every script-evaluation workload — by roughly 1.5–3x on short fresh-context scripts, and on large scripts too. Karate keeps a lead only on raw context creation.
+On this benchmark, Rhino in interpreted mode with a shared sealed root scope (`Rhino-best`) beats `karate-js` on every workload — roughly 1.5–2.6x on short fresh-context scripts, 1.1–1.4x on large ones — and matches it on context creation. GraalJS with a shared `Engine` wins the context-reuse rows outright.
 
-Earlier versions of this README claimed Karate was 2–8x faster than Rhino. That number came from benchmarking Rhino in its default compiled mode, which generates JVM bytecode and defines a class for every evaluation — cost that a run-once script never amortises. It was a measurement artifact, not an engine difference.
+Earlier versions of this README claimed Karate was 2–8x faster than Rhino and ~1300x faster at context creation. Both came from benchmarking Rhino in configurations no informed embedder would use: compiled mode, which generates JVM bytecode and defines a class for every evaluation, and a full `initStandardObjects` per evaluation, which Rhino's own docs warn is expensive. Those were measurement artifacts, not engine differences.
 
 ### Why the comparison changed
 
-Two corrections, both of which moved results against Karate:
+Three corrections, all of which moved results against Karate:
 
 1. **Rhino got its documented embedding configuration.** Rhino's own docs call `initStandardObjects` *"an expensive method to call"* and recommend a shared sealed scope that each evaluation cheaply prototypes off. That is structurally the same design as `karate-js` — an immutable shared standard library behind a cheap per-eval global — so it is the fair comparison, not merely the fast one.
 2. **Parse caching was defeated.** Every evaluation now gets unique source text. GraalJS with a shared `Engine` caches parsed sources across contexts; `karate-js` has no source cache and re-parses every time. Benchmarking identical text let GraalJS skip work Karate always does, which had made it look several times faster on large scripts. It isn't.
+3. **Java interop was equalised.** Interop is off in `karate-js` here and denied by default in GraalJS, so Rhino now uses `initSafeStandardObjects` instead of being charged for LiveConnect setup the others never perform.
 
-### What Karate still wins
+The third correction is what erased Karate's context-creation lead: once Rhino builds its standard objects once and shares them, `new Engine()` and a prototyped Rhino scope cost the same.
 
-Context creation. `new Engine()` is cheap because the standard library lives in lazily-initialised JVM-wide singletons. Read that row as an architectural difference rather than like-for-like — the engines defer different amounts of work, and it is the noisiest measurement in the suite.
+### What this does and doesn't say
 
-That advantage is real but narrow, and on these numbers it is not enough to make `karate-js` the fastest option for its own workload.
+It says `karate-js` is not the fastest JavaScript engine available for its own workload — a well-configured Rhino is quicker across the board, and the margin is between 1.1x and 2.6x.
+
+It does not say Karate is slow. The absolute numbers are tens of microseconds for a typical script; on a test that also makes an HTTP call, the difference is noise. And it says nothing about the reasons `karate-js` was written, which were never primarily about speed.
+
+### Why `karate-js` exists
+
+Speed was never the only goal, and these results do not change the reasons it was written:
+
+- **Java interop as a first-class concept.** Karate is a Java tool whose scripts constantly cross into Java. `karate-js` is designed around that boundary rather than bolting it on. Note that interop is *disabled* in this benchmark for all three engines, so none of these numbers reflect it.
+- **Insulating Karate users from JavaScript-engine churn.** Karate has been bitten by this twice — Nashorn's removal from the JDK, and GraalJS's packaging and runtime changes. Owning the engine means a JDK or vendor decision cannot break Karate users. GraalJS losing stock-JDK JIT support in Truffle 25.1, described above, is the same pattern happening again.
+- **A fit-for-purpose engine.** `karate-js` is tuned for Karate's actual shape: many small scripts, fresh contexts, and AST caching where it pays — `karate-config.js`, for instance, is cached rather than re-parsed.
+
+We continue to optimise the engine. On the evidence here it is fast in the range that matters for Karate users, and that is the bar it is held to.
 
 ### Script sizes in practice
 
@@ -145,6 +158,7 @@ For GraalJS, share one `Engine` across `Context`s ([Oracle's documented recipe](
 - Before anything is timed, all six configurations must return **the same value** for every workload. A config that silently failed would otherwise look fastest.
 - All configurations share a single JVM, are measured in a fixed order, and are timed with `System.nanoTime()` rather than JMH. Median-of-5 with per-workload warmup absorbs most of this, but these are not JMH-grade figures and small differences should not be over-read.
 - `Rhino-best` uses a *sealed* shared scope, so scripts cannot modify built-in prototypes. `karate-js` permits per-engine modification of built-ins. For these workloads that difference does not affect results, but it is not a perfect semantic match.
+- **Java interop is off for all three engines.** A bare `new Engine()` installs no `ExternalBridge` — Karate's Java bridge is wired up by `karate-core`, not by `karate-js` — and GraalJS denies host access by default. Rhino therefore uses `initSafeStandardObjects`, which skips the LiveConnect interop objects, rather than `initStandardObjects`, which would have charged Rhino for setup the other two never perform.
 
 ### Scope
 
