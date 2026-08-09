@@ -20,10 +20,10 @@ All numbers below are produced by the [`benchmark` workflow](.github/workflows/b
 |---|---|
 | Machine | AMD EPYC 7763 64-Core Processor, 4 vCPU, 16 GB (ubuntu24, X64) |
 | Java | 21.0.11 (OpenJDK 64-Bit Server VM) |
-| Karate JS | 2.1.2.RC1, built from source at `c7e21b2` |
+| Karate JS | 2.1.2.RC2, built from source at `70c1aa7` |
 | Rhino | 1.9.1 |
 | GraalJS | 25.2.4 (Community Edition) |
-| Run | [GitHub Actions run 2](https://github.com/ptrthomas/karate-js-benchmark/actions/runs/31272537458) |
+| Run | [GitHub Actions run 4](https://github.com/ptrthomas/karate-js-benchmark/actions/runs/31318907659) |
 
 Each competitor appears twice — in its default configuration, and tuned for this workload. **Karate vs best** compares Karate against whichever non-Karate configuration was fastest for that row, so Karate is never flattered by a competitor's suboptimal default.
 
@@ -33,34 +33,34 @@ Cost of a fresh set of globals, nothing evaluated. The engines defer different a
 
 | | Karate (µs) | Rhino (µs) | Rhino-int (µs) | Rhino-best (µs) | Graal (µs) | Graal-shared (µs) | Karate vs best |
 |---|---|---|---|---|---|---|---|
-| Context Create | 0.10 | 85.70 | 75.50 | 0.05 | 95.53 | 10.43 | 1.9x slower (Rhino-best) |
+| Context Create | 0.06 | 89.53 | 73.00 | 0.07 | 91.60 | 8.13 | 1.2x faster (Rhino-best) |
 
 ### Script Evaluation (Fresh Context)
 
 | Workload | Bytes | Karate (ms) | Rhino (ms) | Rhino-int (ms) | Rhino-best (ms) | Graal (ms) | Graal-shared (ms) | Karate vs best |
 |---|---|---|---|---|---|---|---|---|
-| Arithmetic | 123 | 0.1289 | 1.0145 | 0.1836 | 0.0617 | 0.7448 | 0.2757 | 2.1x slower (Rhino-best) |
-| Strings | 93 | 0.0593 | 0.7466 | 0.1263 | 0.0300 | 0.5663 | 0.2699 | 2.0x slower (Rhino-best) |
-| Objects | 329 | 0.1385 | 1.5888 | 0.2056 | 0.0937 | 0.6915 | 0.3475 | 1.5x slower (Rhino-best) |
-| Functions | 247 | 0.1492 | 1.1355 | 0.1722 | 0.0618 | 0.6618 | 0.3333 | 2.4x slower (Rhino-best) |
-| Mixed | 576 | 0.3122 | 1.5870 | 0.2932 | 0.1333 | 0.7885 | 0.4078 | 2.3x slower (Rhino-best) |
+| Arithmetic | 123 | 0.0940 | 0.9539 | 0.1787 | 0.0667 | 0.6992 | 0.2813 | 1.4x slower (Rhino-best) |
+| Strings | 93 | 0.0475 | 0.7244 | 0.1221 | 0.0303 | 0.5416 | 0.2548 | 1.6x slower (Rhino-best) |
+| Objects | 329 | 0.1169 | 1.4710 | 0.2010 | 0.0930 | 0.7104 | 0.3555 | 1.3x slower (Rhino-best) |
+| Functions | 247 | 0.1341 | 1.1124 | 0.1625 | 0.0630 | 0.6345 | 0.2967 | 2.1x slower (Rhino-best) |
+| Mixed | 576 | 0.2750 | 1.5816 | 0.2296 | 0.1356 | 0.7344 | 0.3946 | 2.0x slower (Rhino-best) |
 
 ### Context Reuse (Pure Execution Speed)
 
 | Workload | Bytes | Karate (ms) | Rhino (ms) | Rhino-int (ms) | Rhino-best (ms) | Graal (ms) | Graal-shared (ms) | Karate vs best |
 |---|---|---|---|---|---|---|---|---|
-| Mixed-Reuse | 576 | 0.3401 | 1.6984 | 0.1608 | 0.1498 | 0.0803 | 0.0711 | 4.8x slower (Graal-shared) |
-| Mixed-NoCache | 576 | 0.3334 | 1.6754 | 0.1487 | 0.1482 | 0.1711 | 0.1386 | 2.4x slower (Graal-shared) |
+| Mixed-Reuse | 576 | 0.2726 | 1.6428 | 0.1711 | 0.1499 | 0.0756 | 0.0711 | 3.8x slower (Graal-shared) |
+| Mixed-NoCache | 576 | 0.2848 | 1.6548 | 0.1476 | 0.1501 | 0.1794 | 0.1403 | 2.0x slower (Graal-shared) |
 
 ### Large Script Scaling (Fresh Context per Eval)
 
 | Target | Bytes | Karate (ms) | Rhino (ms) | Rhino-int (ms) | Rhino-best (ms) | Graal (ms) | Graal-shared (ms) | Karate vs best |
 |---|---|---|---|---|---|---|---|---|
-| 1KB | 1133 | 0.1793 | 2.8255 | 0.2131 | 0.1027 | 0.9892 | 0.3694 | 1.7x slower (Rhino-best) |
-| 5KB | 5378 | 0.4830 | 10.6923 | 0.5363 | 0.4305 | 1.1137 | 1.2201 | 1.1x slower (Rhino-best) |
-| 10KB | 10728 | 0.9638 | 19.2912 | 0.9666 | 0.8575 | 1.4880 | 1.1498 | 1.1x slower (Rhino-best) |
-| 50KB | 53533 | 4.8151 | 89.7000 | 5.5825 | 4.3734 | 4.9940 | 4.5410 | 1.1x slower (Rhino-best) |
-| 100KB | 107533 | 9.7155 | 185.0869 | 9.7791 | 9.4699 | 10.4871 | 11.5980 | 1.0x slower (Rhino-best) |
+| 1KB | 1133 | 0.1763 | 2.6983 | 0.2188 | 0.1065 | 1.1567 | 0.3504 | 1.7x slower (Rhino-best) |
+| 5KB | 5378 | 0.4348 | 10.0579 | 0.5225 | 0.4265 | 1.1317 | 0.7253 | 1.0x slower (Rhino-best) |
+| 10KB | 10728 | 0.8473 | 18.5890 | 0.9270 | 0.8271 | 1.5015 | 1.1440 | 1.0x slower (Rhino-best) |
+| 50KB | 53533 | 4.5306 | 85.5510 | 4.1624 | 4.7276 | 5.1822 | 4.6387 | 1.1x slower (Rhino-int) |
+| 100KB | 107533 | 9.1912 | 177.1715 | 9.3590 | 9.1355 | 11.5352 | 12.3493 | 1.0x slower (Rhino-best) |
 
 <!-- BENCHMARK:END -->
 
