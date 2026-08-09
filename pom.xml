@@ -20,7 +20,7 @@
         <!-- karate-js is NOT taken from Maven Central - it is built from a local checkout of
              karatelabs/karate (main) by build.sh, which installs it into ~/.m2 at this version.
              Keep this in sync with the <version> in that repo's root pom.xml. -->
-        <karate.version>2.1.2.RC1</karate.version>
+        <karate.version>2.1.2.RC2</karate.version>
         <rhino.version>1.9.1</rhino.version>
         <graaljs.version>25.2.4</graaljs.version>
         <!-- benchmark CSV output path, overridable with -Dexec.args; the markdown block is
