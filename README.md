@@ -122,6 +122,8 @@ Inline expressions in a feature file run to a few hundred bytes. A `karate-confi
 KARATE_SRC=/path/to/karate ./build.sh
 ./build.sh --no-run                # build karate-js only
 ./build.sh results.csv             # write the CSV to a specific path
+./build.sh --quick                 # fast directional pass: Karate vs Rhino-best only,
+                                   # fresh workloads, reduced iterations - not for publication
 ```
 
 It fails fast if `<karate.version>` in `pom.xml` does not match the version `karate` `main` currently builds — bump the pom when karate's version moves.

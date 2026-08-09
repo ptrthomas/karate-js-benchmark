@@ -312,8 +312,21 @@ public class JsEngineBenchmark {
     }
 
     /** Column order for every table and for the CSV. Karate must stay first. */
-    private static final List<Config> CONFIGS = List.of(
+    private static final List<Config> ALL_CONFIGS = List.of(
             KARATE, RHINO, RHINO_INTERPRETED, RHINO_SHARED, GRAAL, GRAAL_SHARED);
+
+    /**
+     * The configs measured in this run: all of them by default, narrowed by --quick to Karate
+     * and Rhino-best (the fastest fresh-context competitor) for a short development loop.
+     */
+    private static List<Config> CONFIGS = ALL_CONFIGS;
+
+    /**
+     * --quick: fresh-context workloads only, two configs, reduced iterations. Finishes in
+     * seconds and keeps the correctness gate, so it fits an edit-measure loop. Directional
+     * feedback only - publishable numbers come from the full run.
+     */
+    private static boolean quick;
 
     /**
      * Makes each iteration's source text unique, so no engine can serve a cached parse.
@@ -350,7 +363,17 @@ public class JsEngineBenchmark {
     }
 
     public static void main(String[] args) {
-        String csvFile = args.length > 0 ? args[0] : null;
+        String csvFile = null;
+        for (String arg : args) {
+            if ("--quick".equals(arg)) {
+                quick = true;
+            } else {
+                csvFile = arg;
+            }
+        }
+        if (quick) {
+            CONFIGS = List.of(KARATE, RHINO_SHARED);
+        }
 
         printHeader();
 
@@ -360,12 +383,16 @@ public class JsEngineBenchmark {
         warmup();
         System.out.println("Warmup complete.\n");
 
-        runContextCreationBenchmark();
+        if (!quick) {
+            runContextCreationBenchmark();
+        }
         runEngineComparison();
 
         String outputFile = csvFile != null ? csvFile : "target/benchmark.csv";
         writeCsv(outputFile);
-        writeMarkdown(outputFile.replaceFirst("\\.csv$", "") + ".md");
+        if (!quick) {
+            writeMarkdown(outputFile.replaceFirst("\\.csv$", "") + ".md");
+        }
     }
 
     private static void printHeader() {
@@ -376,17 +403,27 @@ public class JsEngineBenchmark {
         System.out.println();
         System.out.println("Engines under test:");
         System.out.println("  - Karate        Karate's JS engine v" + version("karate.version"));
-        System.out.println("  - Rhino         Mozilla Rhino v" + version("rhino.version") + ", compiled mode (its DEFAULT)");
-        System.out.println("  - Rhino-int     the same, interpreted mode - no bytecode generation");
-        System.out.println("  - Rhino-best    interpreted + a shared SEALED root scope (Rhino's documented pattern)");
-        System.out.println("  - Graal         GraalJS v" + version("graaljs.version") + ", private Engine per Context (the DEFAULT)");
-        System.out.println("  - Graal-shared  the same, one Engine shared across Contexts");
+        if (!quick) {
+            System.out.println("  - Rhino         Mozilla Rhino v" + version("rhino.version") + ", compiled mode (its DEFAULT)");
+            System.out.println("  - Rhino-int     the same, interpreted mode - no bytecode generation");
+        }
+        System.out.println("  - Rhino-best    Rhino v" + version("rhino.version")
+                + ", interpreted + a shared SEALED root scope (Rhino's documented pattern)");
+        if (!quick) {
+            System.out.println("  - Graal         GraalJS v" + version("graaljs.version") + ", private Engine per Context (the DEFAULT)");
+            System.out.println("  - Graal-shared  the same, one Engine shared across Contexts");
+        }
         System.out.println();
         System.out.println("Java: " + System.getProperty("java.version") + " | OS: " + System.getProperty("os.name")
                 + " " + System.getProperty("os.arch") + " | CPUs: " + Runtime.getRuntime().availableProcessors());
         System.out.println();
-        System.out.println("GraalJS runs interpreted: since Truffle 25.1 the optimizing runtime needs");
-        System.out.println("GraalVM, so on a stock JDK there is no supported way to enable its JIT.");
+        if (quick) {
+            System.out.println("QUICK MODE: fresh-context workloads only, reduced iterations, two configs.");
+            System.out.println("Directional feedback for development - run the full benchmark to publish.");
+        } else {
+            System.out.println("GraalJS runs interpreted: since Truffle 25.1 the optimizing runtime needs");
+            System.out.println("GraalVM, so on a stock JDK there is no supported way to enable its JIT.");
+        }
         System.out.println("Every eval gets UNIQUE source text, so no engine can serve a cached parse -");
         System.out.println("Karate has no source cache, and the scenario is many independent scripts.");
         System.out.println("'Karate vs best' scores Karate against the fastest non-Karate config.");
@@ -489,13 +526,17 @@ public class JsEngineBenchmark {
     private static void runEngineComparison() {
         banner("SCRIPT EVALUATION - Fresh context per eval");
         printHeaderRow("Workload");
-        runComparison("Arithmetic", JS_ARITHMETIC, 2000);
-        runComparison("Strings", JS_STRINGS, 2000);
-        runComparison("Objects", JS_OBJECTS, 1000);
-        runComparison("Functions", JS_FUNCTIONS, 500);
-        runComparison("Mixed", JS_MIXED, 500);
+        int div = quick ? 4 : 1;
+        runComparison("Arithmetic", JS_ARITHMETIC, 2000 / div);
+        runComparison("Strings", JS_STRINGS, 2000 / div);
+        runComparison("Objects", JS_OBJECTS, 1000 / div);
+        runComparison("Functions", JS_FUNCTIONS, 500 / div);
+        runComparison("Mixed", JS_MIXED, 500 / div);
         endBanner();
 
+        if (quick) {
+            return;
+        }
         runContextReuseBenchmark();
         runLargeScriptBenchmark();
     }
