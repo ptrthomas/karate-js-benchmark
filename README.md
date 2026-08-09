@@ -2,7 +2,7 @@
 
 Performance benchmark comparing [Karate's JavaScript engine](https://github.com/karatelabs/karate/tree/main/karate-js) against [Mozilla Rhino](https://github.com/mozilla/rhino) and [GraalJS](https://github.com/oracle/graaljs), for the workload Karate cares about: **many small scripts, each evaluated in a fresh context**.
 
-Every competing engine is measured in its default configuration **and tuned**. That turned out to matter more than the engine choice itself: a properly configured Rhino is faster than `karate-js` here, while Rhino at its defaults looks several times slower. Karate is scored against whichever tuned competitor is fastest.
+Every competing engine is measured in its default configuration **and tuned**. That turned out to matter more than the engine choice itself: a properly configured Rhino is still faster than `karate-js` on the short-script rows here, while Rhino at its defaults looks several times slower. Karate is scored against whichever tuned competitor is fastest.
 
 That makes this repo useful beyond Karate. If you embed Rhino or GraalJS yourself, the default-vs-tuned columns show what a one-line configuration change is worth for short-script workloads — see [Engine configuration](#engine-configuration).
 
@@ -66,9 +66,9 @@ Cost of a fresh set of globals, nothing evaluated. The engines defer different a
 
 ## Analysis
 
-### The headline: a tuned Rhino is faster than `karate-js`
+### The headline: a tuned Rhino still leads the core short-script rows — by less each release
 
-On this benchmark, Rhino in interpreted mode with a shared sealed root scope (`Rhino-best`) beats `karate-js` on **every single row** — roughly 1.5–2.4x on short fresh-context scripts, around 2x on context creation, and by a narrowing margin up to 100KB. GraalJS with a shared `Engine` wins the context-reuse rows outright.
+On the fresh-context rows this benchmark exists for, Rhino in interpreted mode with a shared sealed root scope (`Rhino-best`) remains ahead of `karate-js` — 1.3–2.1x depending on the row as of 2.1.2.RC2. The rest of the picture is no longer one-sided: context creation is now marginally *faster* than a prototyped Rhino scope, and from 5KB of script upward the two engines are at parity (1.0–1.1x), with `karate-js` also ahead of GraalJS there. The core-row gap is closing measurably: between 2.1.2.RC1 and RC2 (both CI runs, CSVs in [`results/`](results/)) the five fresh-workload ratios moved from 2.09 / 1.98 / 1.48 / 2.42 / 2.34 to 1.41 / 1.56 / 1.26 / 2.13 / 2.03 — a geometric-mean gap of ~2.0x down to ~1.64x. GraalJS with a shared `Engine` wins the context-reuse rows outright.
 
 Earlier versions of this README claimed Karate was 2–8x faster than Rhino and ~1300x faster at context creation. Both came from benchmarking Rhino in configurations no informed embedder would use: compiled mode, which generates JVM bytecode and defines a class for every evaluation, and a full `initStandardObjects` per evaluation, which Rhino's own docs warn is expensive. Those were measurement artifacts, not engine differences.
 
@@ -84,7 +84,7 @@ The third correction is what erased Karate's context-creation lead. That row was
 
 ### What this does and doesn't say
 
-It says `karate-js` is not the fastest JavaScript engine available for its own workload — a well-configured Rhino is quicker across the board, by up to about 2.4x.
+It says a well-configured Rhino is still the fastest engine for this benchmark's core rows — currently by 1.3–2.1x — while `karate-js` matches it from 5KB of script upward and edges it on context creation.
 
 It does not say Karate is slow. The absolute numbers are tens of microseconds for a typical script; on a test that also makes an HTTP call, the difference is noise. And it says nothing about the reasons `karate-js` was written, which were never primarily about speed.
 
@@ -99,7 +99,7 @@ Speed was never the only goal, and these results do not change the reasons it wa
 
   This is part of why a tuned Rhino wins above. Firing events at that granularity, and keeping the AST walkable and richly annotated so it can be analysed and rendered, costs something on every evaluation. That trade was made deliberately.
 
-We continue to optimise the engine. On the evidence here it is fast in the range that matters for Karate users, and that is the bar it is held to.
+We continue to optimise the engine — the RC1 → RC2 movement above is that work landing. On the evidence here it is fast in the range that matters for Karate users, and that is the bar it is held to.
 
 ### Script sizes in practice
 
