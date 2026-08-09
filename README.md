@@ -95,6 +95,9 @@ Speed was never the only goal, and these results do not change the reasons it wa
 - **Java interop as a first-class concept.** Karate is a Java tool whose scripts constantly cross into Java. `karate-js` is designed around that boundary rather than bolting it on. Note that interop is *disabled* in this benchmark for all three engines, so none of these numbers reflect it.
 - **Insulating Karate users from JavaScript-engine churn.** Karate has been bitten by this twice — Nashorn's removal from the JDK, and GraalJS's packaging and runtime changes. Owning the engine means a JDK or vendor decision cannot break Karate users. GraalJS losing stock-JDK JIT support in Truffle 25.1, described above, is the same pattern happening again.
 - **A fit-for-purpose engine.** `karate-js` is tuned for Karate's actual shape: many small scripts, fresh contexts, and AST caching where it pays — `karate-config.js`, for instance, is cached rather than re-parsed.
+- **A deep event and introspection framework.** The interpreter emits fine-grained events as it runs — statement and expression entry/exit, which arm of a branch was taken, the concrete operands of every comparison, dynamic property reads, and variable binds — to a listener the embedder installs. That makes AOP-like capabilities possible without bytecode weaving or a separate static-analysis pass: branch-level code coverage, execution tracing, debuggers, and tooling that can study a script by *observing* its real behaviour rather than reasoning about its source — and then visualise it.
+
+  This is part of why a tuned Rhino wins above. Firing events at that granularity, and keeping the AST walkable and richly annotated so it can be analysed and rendered, costs something on every evaluation. That trade was made deliberately.
 
 We continue to optimise the engine. On the evidence here it is fast in the range that matters for Karate users, and that is the bar it is held to.
 
