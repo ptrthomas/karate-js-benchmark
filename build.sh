@@ -64,15 +64,8 @@ if [[ "${1:-}" == "--no-run" ]]; then
   exit 0
 fi
 
-# archive the previous run before clean removes it - a benchmark result is expensive to
-# reproduce and target/ is about to be wiped
-if [[ -f target/benchmark.csv ]]; then
-  mkdir -p results
-  STAMP=$(date +%Y%m%d-%H%M%S)
-  cp target/benchmark.csv "results/prev-$STAMP.csv"
-  echo "==> archived previous run to results/prev-$STAMP.csv"
-fi
-
+# target/benchmark.csv is about to be wiped by clean - pass an explicit output path to any
+# run whose result should be kept; results/ holds only deliberately named CSVs
 echo "==> running benchmark"
 mvn -q clean compile
 mvn -q compile exec:java ${1:+-Dexec.args="$1"}
