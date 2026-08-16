@@ -2,7 +2,7 @@
 
 Performance benchmark comparing [Karate's JavaScript engine](https://github.com/karatelabs/karate/tree/main/karate-js) against [Mozilla Rhino](https://github.com/mozilla/rhino) and [GraalJS](https://github.com/oracle/graaljs), for the workload Karate cares about: **many small scripts, each evaluated in a fresh context**.
 
-Every competing engine is measured in its default configuration **and tuned**. That turned out to matter more than the engine choice itself: a properly configured Rhino is still faster than `karate-js` on the short-script rows here, while Rhino at its defaults looks several times slower. Karate is scored against whichever tuned competitor is fastest.
+Every competing engine is measured in its default configuration **and tuned**. That turned out to matter more than the engine choice itself: Rhino at its defaults looks an order of magnitude slower than its own documented embedding configuration. Karate is scored against whichever tuned competitor is fastest — and as of `2.1.3.RC1` it sits at **parity with that frontier**: even or ahead on four of the five short-script rows and on every large-script size, behind only on the mixed workload (1.3x).
 
 That makes this repo useful beyond Karate. If you embed Rhino or GraalJS yourself, the default-vs-tuned columns show what a one-line configuration change is worth for short-script workloads — see [Engine configuration](#engine-configuration).
 
@@ -10,7 +10,7 @@ That makes this repo useful beyond Karate. If you embed Rhino or GraalJS yoursel
 
 ## Results
 
-All numbers below are produced by the [`benchmark` workflow](.github/workflows/benchmark.yml) on a GitHub-hosted Linux runner, so every run uses the same hardware class and results stay comparable across engine versions. **Do not edit them by hand** — see [Updating the results](#updating-the-results).
+All numbers below are produced by [`etc/ec2-benchmark.sh`](etc/ec2-benchmark.sh) on a dedicated EC2 instance of a **pinned type** (`c6a.2xlarge` — the same EPYC CPU family as GitHub's hosted runners, so the karate-vs-best *ratios* stay comparable with the archived `results/*-ci.csv` files). A dedicated host removes the noisy-neighbour variance that made shared CI runners untrustworthy for sub-2x comparisons, the 8 vCPU size keeps JIT compiler threads from racing the measured thread (on 4 vCPU hosts — GitHub runners included — that race made single rows swing 2–4x between runs; the script header records the measurement), and each publish is the **median of three runs**, selected by the fresh-workload geometric mean. **Do not edit the numbers by hand** — see [Updating the results](#updating-the-results).
 
 <!-- BENCHMARK:START -->
 
@@ -18,12 +18,12 @@ All numbers below are produced by the [`benchmark` workflow](.github/workflows/b
 
 | | |
 |---|---|
-| Machine | AMD EPYC 7763 64-Core Processor, 4 vCPU, 16 GB (ubuntu24, X64) |
-| Java | 21.0.11 (OpenJDK 64-Bit Server VM) |
-| Karate JS | 2.1.2.RC2, built from source at `70c1aa7` |
+| Machine | AMD EPYC 7R13 Processor, 8 vCPU, 15 GB (EC2 c6a.2xlarge, al2023, X64) |
+| Java | 21.0.12 (OpenJDK 64-Bit Server VM) |
+| Karate JS | 2.1.3.RC1, built from source at `ee85f28cd` |
 | Rhino | 1.9.1 |
 | GraalJS | 25.2.4 (Community Edition) |
-| Run | [GitHub Actions run 4](https://github.com/ptrthomas/karate-js-benchmark/actions/runs/31318907659) |
+| Run | EC2 c6a.2xlarge on-demand, 2026-08-16 — median of 3 runs by fresh-workload geomean |
 
 Each competitor appears twice — in its default configuration, and tuned for this workload. **Karate vs best** compares Karate against whichever non-Karate configuration was fastest for that row, so Karate is never flattered by a competitor's suboptimal default.
 
@@ -33,42 +33,42 @@ Cost of a fresh set of globals, nothing evaluated. The engines defer different a
 
 | | Karate (µs) | Rhino (µs) | Rhino-int (µs) | Rhino-best (µs) | Graal (µs) | Graal-shared (µs) | Karate vs best |
 |---|---|---|---|---|---|---|---|
-| Context Create | 0.06 | 89.53 | 73.00 | 0.07 | 91.60 | 8.13 | 1.2x faster (Rhino-best) |
+| Context Create | 0.06 | 69.77 | 69.36 | 0.05 | 49.87 | 3.55 | 1.2x slower (Rhino-best) |
 
 ### Script Evaluation (Fresh Context)
 
 | Workload | Bytes | Karate (ms) | Rhino (ms) | Rhino-int (ms) | Rhino-best (ms) | Graal (ms) | Graal-shared (ms) | Karate vs best |
 |---|---|---|---|---|---|---|---|---|
-| Arithmetic | 123 | 0.0940 | 0.9539 | 0.1787 | 0.0667 | 0.6992 | 0.2813 | 1.4x slower (Rhino-best) |
-| Strings | 93 | 0.0475 | 0.7244 | 0.1221 | 0.0303 | 0.5416 | 0.2548 | 1.6x slower (Rhino-best) |
-| Objects | 329 | 0.1169 | 1.4710 | 0.2010 | 0.0930 | 0.7104 | 0.3555 | 1.3x slower (Rhino-best) |
-| Functions | 247 | 0.1341 | 1.1124 | 0.1625 | 0.0630 | 0.6345 | 0.2967 | 2.1x slower (Rhino-best) |
-| Mixed | 576 | 0.2750 | 1.5816 | 0.2296 | 0.1356 | 0.7344 | 0.3946 | 2.0x slower (Rhino-best) |
+| Arithmetic | 123 | 0.0549 | 0.8978 | 0.1543 | 0.0611 | 0.6204 | 0.2701 | 1.1x faster (Rhino-best) |
+| Strings | 93 | 0.0259 | 0.6631 | 0.1217 | 0.0259 | 0.5018 | 0.2698 | 1.0x faster (Rhino-best) |
+| Objects | 329 | 0.0851 | 1.3624 | 0.1787 | 0.0894 | 0.6408 | 0.3280 | 1.0x faster (Rhino-best) |
+| Functions | 247 | 0.0637 | 1.0502 | 0.1504 | 0.0699 | 0.6067 | 0.3104 | 1.1x faster (Rhino-best) |
+| Mixed | 576 | 0.1617 | 1.4230 | 0.2080 | 0.1215 | 0.6778 | 0.3725 | 1.3x slower (Rhino-best) |
 
 ### Context Reuse (Pure Execution Speed)
 
 | Workload | Bytes | Karate (ms) | Rhino (ms) | Rhino-int (ms) | Rhino-best (ms) | Graal (ms) | Graal-shared (ms) | Karate vs best |
 |---|---|---|---|---|---|---|---|---|
-| Mixed-Reuse | 576 | 0.2726 | 1.6428 | 0.1711 | 0.1499 | 0.0756 | 0.0711 | 3.8x slower (Graal-shared) |
-| Mixed-NoCache | 576 | 0.2848 | 1.6548 | 0.1476 | 0.1501 | 0.1794 | 0.1403 | 2.0x slower (Graal-shared) |
+| Mixed-Reuse | 576 | 0.1714 | 1.5790 | 0.1400 | 0.1309 | 0.0598 | 0.0588 | 2.9x slower (Graal-shared) |
+| Mixed-NoCache | 576 | 0.1711 | 1.4983 | 0.1294 | 0.1322 | 0.1379 | 0.1367 | 1.3x slower (Rhino-int) |
 
 ### Large Script Scaling (Fresh Context per Eval)
 
 | Target | Bytes | Karate (ms) | Rhino (ms) | Rhino-int (ms) | Rhino-best (ms) | Graal (ms) | Graal-shared (ms) | Karate vs best |
 |---|---|---|---|---|---|---|---|---|
-| 1KB | 1133 | 0.1763 | 2.6983 | 0.2188 | 0.1065 | 1.1567 | 0.3504 | 1.7x slower (Rhino-best) |
-| 5KB | 5378 | 0.4348 | 10.0579 | 0.5225 | 0.4265 | 1.1317 | 0.7253 | 1.0x slower (Rhino-best) |
-| 10KB | 10728 | 0.8473 | 18.5890 | 0.9270 | 0.8271 | 1.5015 | 1.1440 | 1.0x slower (Rhino-best) |
-| 50KB | 53533 | 4.5306 | 85.5510 | 4.1624 | 4.7276 | 5.1822 | 4.6387 | 1.1x slower (Rhino-int) |
-| 100KB | 107533 | 9.1912 | 177.1715 | 9.3590 | 9.1355 | 11.5352 | 12.3493 | 1.0x slower (Rhino-best) |
+| 1KB | 1133 | 0.1227 | 2.3441 | 0.1846 | 0.1447 | 0.7235 | 0.3518 | 1.2x faster (Rhino-best) |
+| 5KB | 5378 | 0.3743 | 8.9318 | 0.4758 | 0.3843 | 0.9892 | 0.6440 | 1.0x faster (Rhino-best) |
+| 10KB | 10728 | 0.7366 | 16.3720 | 0.8670 | 0.7573 | 1.3816 | 1.2167 | 1.0x faster (Rhino-best) |
+| 50KB | 53533 | 3.9011 | 77.5950 | 4.0687 | 4.1955 | 5.0260 | 4.9492 | 1.0x faster (Rhino-int) |
+| 100KB | 107533 | 7.7087 | 157.2919 | 8.5935 | 8.7062 | 9.1453 | 9.4081 | 1.1x faster (Rhino-int) |
 
 <!-- BENCHMARK:END -->
 
 ## Analysis
 
-### The headline: a tuned Rhino still leads the core short-script rows — by less each release
+### The headline: parity with a tuned Rhino on the core rows — one workload still behind
 
-On the fresh-context rows this benchmark exists for, Rhino in interpreted mode with a shared sealed root scope (`Rhino-best`) remains ahead of `karate-js` — 1.3–2.1x depending on the row as of 2.1.2.RC2. The rest of the picture is no longer one-sided: context creation is now marginally *faster* than a prototyped Rhino scope, and from 5KB of script upward the two engines are at parity (1.0–1.1x), with `karate-js` also ahead of GraalJS there. The core-row gap is closing measurably: between 2.1.2.RC1 and RC2 (both CI runs, CSVs in [`results/`](results/)) the five fresh-workload ratios moved from 2.09 / 1.98 / 1.48 / 2.42 / 2.34 to 1.41 / 1.56 / 1.26 / 2.13 / 2.03 — a geometric-mean gap of ~2.0x down to ~1.64x. GraalJS with a shared `Engine` wins the context-reuse rows outright.
+On the fresh-context rows this benchmark exists for, `karate-js` at `2.1.3.RC1` has reached **parity with the tuned frontier**: it is even-or-ahead of Rhino in its best configuration on Arithmetic, Strings, Objects and Functions, ahead on every large-script size from 1KB to 100KB, and behind only on Mixed (1.3x — the row that combines object literals, array building and property access, which is where the remaining engine work is aimed). The gap's trajectory across releases (fresh-workload ratios, Arithmetic / Strings / Objects / Functions / Mixed; CSVs in [`results/`](results/)): 2.1.2.RC1 **2.09 / 1.98 / 1.48 / 2.42 / 2.34** → RC2 **1.41 / 1.56 / 1.26 / 2.13 / 2.03** → 2.1.3.RC1 **0.90 / 1.00 / 0.95 / 0.91 / 1.33** — a geometric-mean gap of ~2.0x → ~1.64x → **~1.0x**. (The first two are CI runs, the third the EC2 instrument; ratios are hardware-class-comparable, and the CI era's per-row noise means the older per-row digits are approximate.) GraalJS with a shared `Engine` still wins the context-reuse rows outright.
 
 Earlier versions of this README claimed Karate was 2–8x faster than Rhino and ~1300x faster at context creation. Both came from benchmarking Rhino in configurations no informed embedder would use: compiled mode, which generates JVM bytecode and defines a class for every evaluation, and a full `initStandardObjects` per evaluation, which Rhino's own docs warn is expensive. Those were measurement artifacts, not engine differences.
 
@@ -84,9 +84,9 @@ The third correction is what erased Karate's context-creation lead. That row was
 
 ### What this does and doesn't say
 
-It says a well-configured Rhino is still the fastest engine for this benchmark's core rows — currently by 1.3–2.1x — while `karate-js` matches it from 5KB of script upward and edges it on context creation.
+It says `karate-js` and a well-configured Rhino are now interchangeable on speed for this benchmark's core rows — each wins some rows, the geometric mean is ~1.0x, and only the Mixed workload (1.3x) still separates them. For context reuse with identical source, GraalJS's shared-`Engine` caching remains the fastest option.
 
-It does not say Karate is slow. The absolute numbers are tens of microseconds for a typical script; on a test that also makes an HTTP call, the difference is noise. And it says nothing about the reasons `karate-js` was written, which were never primarily about speed.
+It does not say Karate is the fastest possible engine, and it never needed to say Karate was slow. The absolute numbers are tens of microseconds for a typical script; on a test that also makes an HTTP call, the difference is noise. And it says nothing about the reasons `karate-js` was written, which were never primarily about speed.
 
 ### Why `karate-js` exists
 
@@ -97,9 +97,9 @@ Speed was never the only goal, and these results do not change the reasons it wa
 - **A fit-for-purpose engine.** `karate-js` is tuned for Karate's actual shape: many small scripts, fresh contexts, and AST caching where it pays — `karate-config.js`, for instance, is cached rather than re-parsed.
 - **A deep event and introspection framework.** The interpreter emits fine-grained events as it runs — statement and expression entry/exit, which arm of a branch was taken, the concrete operands of every comparison, dynamic property reads, and variable binds — to a listener the embedder installs. That makes AOP-like capabilities possible without bytecode weaving or a separate static-analysis pass: branch-level code coverage, execution tracing, debuggers, and tooling that can study a script by *observing* its real behaviour rather than reasoning about its source — and then visualise it.
 
-  This is part of why a tuned Rhino wins above. Firing events at that granularity, and keeping the AST walkable and richly annotated so it can be analysed and rendered, costs something on every evaluation. That trade was made deliberately.
+  This costs something on every evaluation — firing events at that granularity, and keeping the AST walkable and richly annotated so it can be analysed and rendered, is overhead a leaner interpreter never pays. That trade was made deliberately, which makes the current parity-with-tuned-Rhino result notable: the introspection machinery is no longer buying a measurable speed penalty on these rows.
 
-We continue to optimise the engine — the RC1 → RC2 movement above is that work landing. On the evidence here it is fast in the range that matters for Karate users, and that is the bar it is held to.
+We continue to optimise the engine — the RC1 → RC2 → 2.1.3 movement above is that work landing (profiling-driven: dense slot frames for locals and confined block bindings, allocation-free scope exit, single-pass property probes, and array fast paths). On the evidence here it is fast in the range that matters for Karate users, and that is the bar it is held to.
 
 ### Script sizes in practice
 
@@ -136,33 +136,31 @@ mvn compile exec:java
 
 Each run writes a CSV and a markdown block (`target/benchmark.csv` and `target/benchmark.md`). The markdown block is what gets spliced into the Results section above, by hand — see [Updating the results](#updating-the-results).
 
-### Run on CI
+### Run on EC2 (canonical)
 
-The canonical run is `workflow_dispatch` on the [`benchmark` workflow](.github/workflows/benchmark.yml) — on demand, not scheduled. It takes a `karate_ref` input if you want to benchmark a branch other than `main`.
+The canonical run is [`etc/ec2-benchmark.sh`](etc/ec2-benchmark.sh): it launches a `c6a.xlarge` on-demand instance, ships your **local** karate checkout (so unpushed engine work benchmarks correctly), builds `karate-js` from source there, runs the benchmark three times, selects the **median run** by fresh-workload geometric mean, copies the artifacts back to `target/ec2/`, and terminates everything it created — on success or failure. Roughly 30–45 minutes and ~$0.15 of instance time.
 
-The workflow does **not** write to this repo. It publishes the results to the run's job summary (rendered, plus a paste-ready block and the full console output) and as a `benchmark-results` artifact.
+Shared CI runners were retired as the canonical source because their numbers cannot be trusted at the margins this table now measures: spikes and noisy neighbours have made back-to-back runs disagree by more than 2x on a row neither build touched. A dedicated host of a pinned instance type keeps runs comparable *and* quiet. The [`benchmark` workflow](.github/workflows/benchmark.yml) still exists as an ad-hoc convenience (`workflow_dispatch`), but its numbers are not published here.
 
 ### Updating the results
 
-Refreshing the Results section is a deliberate manual commit, so every numbers change in git history traces back to a person and a run id:
+Refreshing the Results section is a deliberate manual commit, so every numbers change in git history traces back to a person and a run:
 
 ```bash
-# 1. check the version pin first - CI fails fast if these disagree
+# 1. check the version pin first - the script fails fast (before any AWS spend) if these disagree
 grep karate.version pom.xml
 #    compare against <version> in karatelabs/karate's root pom.xml on main,
 #    and update pom.xml if it has moved
 
-# 2. run it, wait for green
-gh workflow run benchmark.yml --ref main
-gh run list --workflow=benchmark.yml --limit 1        # note the run id
-gh run watch <run-id> --exit-status
+# 2. run it (needs AWS_PROFILE/AWS_REGION and a subnet/key - see the script header)
+source /path/to/your/private/aws.env
+KARATE_SRC=/path/to/karate ./etc/ec2-benchmark.sh
 
-# 3. splice the generated block into the Results section
-gh run download <run-id> -n benchmark-results -D /tmp/bench
-./etc/update-readme.py README.md /tmp/bench/benchmark.md
-cp /tmp/bench/benchmark.csv results/benchmark-<karate-version>-ci.csv
+# 3. splice the median run's block into the Results section, archive its CSV
+./etc/update-readme.py README.md target/ec2/benchmark-median.md
+cp target/ec2/benchmark-median.csv results/benchmark-<karate-version>-ec2.csv
 
-# 4. commit both, citing the run id
+# 4. commit both, citing the karate sha the block records
 ```
 
 **Then re-read the Analysis section and fix it to match.** This is the step that gets missed. `update-readme.py` only rewrites what sits between the markers; the Analysis and Notes prose is hand-written, sits *outside* them, and quotes specific multiples ("roughly 1.5–2.4x", "around 2x on context creation") plus a conclusion about which engine wins. If the new numbers move, that prose silently becomes wrong, and wrong in the most embarrassing direction — a published claim contradicted by the table directly above it.

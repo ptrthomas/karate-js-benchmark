@@ -1,8 +1,9 @@
 name: benchmark
 
-# The canonical benchmark run. Numbers in the README come from HERE, never from a
-# developer laptop - a GitHub-hosted runner gives every run the same hardware class,
-# so results stay comparable across engine versions.
+# Ad-hoc convenience run only — NOT the canonical source of README numbers anymore.
+# Shared runners proved too noisy for sub-2x comparisons (spikes, noisy neighbours);
+# the canonical run is etc/ec2-benchmark.sh on a dedicated pinned-type EC2 host, which
+# is where every published number now comes from. See README "Run on EC2 (canonical)".
 #
 # This workflow deliberately does NOT write to the repo. It publishes the results to
 # the job summary and as artifacts; refreshing the README is a MANUAL commit by a human
