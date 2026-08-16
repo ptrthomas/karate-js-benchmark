@@ -31,23 +31,25 @@
 #      internally consistent
 #   5. prints the splice-and-archive commands for the README
 #
-# Usage:
-#   source /path/to/your/private/aws.env     # AWS_PROFILE, AWS_REGION, and either
-#                                            # BENCH_SUBNET/BENCH_KEY_NAME/BENCH_KEY_FILE
-#                                            # or the karate-profiling KP_* equivalents
+# Usage — the minimal env is two variables (see etc/aws.env.example):
+#   source /path/to/your/private/aws.env     # AWS_PROFILE + AWS_REGION suffice: the script
+#                                            # then uses your default VPC's subnet and
+#                                            # creates (and deletes) an ephemeral key pair
 #   ./etc/ec2-benchmark.sh
 #
-# Knobs: BENCH_INSTANCE_TYPE (c6a.2xlarge), BENCH_RUNS (3), KARATE_SRC (auto-located like
-# build.sh: ../karate then ../../karate).
+# Knobs: BENCH_SUBNET (default: the default VPC's subnet), BENCH_KEY_NAME + BENCH_KEY_FILE
+# (default: an ephemeral key pair created for the run and deleted after), BENCH_INSTANCE_TYPE
+# (c6a.2xlarge), BENCH_RUNS (3), KARATE_SRC (auto-located like build.sh: ../karate then
+# ../../karate). The karate-profiling KP_* variables are honored as fallbacks.
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 : "${AWS_PROFILE:?source your aws env first}"
 : "${AWS_REGION:?source your aws env first}"
-SUBNET_ID=${BENCH_SUBNET:-${KP_SUBNET:?need BENCH_SUBNET or KP_SUBNET}}
-KEY_NAME=${BENCH_KEY_NAME:-${KP_KEY_NAME:?need BENCH_KEY_NAME or KP_KEY_NAME}}
-KEY_FILE=${BENCH_KEY_FILE:-${KP_KEY_FILE:?need BENCH_KEY_FILE or KP_KEY_FILE}}
+SUBNET_ID=${BENCH_SUBNET:-${KP_SUBNET:-}}
+KEY_NAME=${BENCH_KEY_NAME:-${KP_KEY_NAME:-}}
+KEY_FILE=${BENCH_KEY_FILE:-${KP_KEY_FILE:-}}
 INSTANCE_TYPE=${BENCH_INSTANCE_TYPE:-c6a.2xlarge}
 RUNS=${BENCH_RUNS:-3}
 
@@ -73,11 +75,21 @@ OUR_VERSION=$(mvn -q help:evaluate -Dexpression=karate.version -DforceStdout)
 
 AMI=$($AWS ssm get-parameters --names /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
       --query 'Parameters[0].Value' --output text)
+
+# no subnet given → use the account's default VPC (present in any untouched AWS account)
+if [[ -z "$SUBNET_ID" ]]; then
+  SUBNET_ID=$($AWS ec2 describe-subnets --filters Name=default-for-az,Values=true \
+              --query 'Subnets[0].SubnetId' --output text)
+  [[ "$SUBNET_ID" != "None" && -n "$SUBNET_ID" ]] \
+    || { echo "ERROR: no default VPC in $AWS_REGION — set BENCH_SUBNET to a public subnet" >&2; exit 1; }
+  echo "==> using default-VPC subnet $SUBNET_ID"
+fi
 VPC_ID=$($AWS ec2 describe-subnets --subnet-ids "$SUBNET_ID" --query 'Subnets[0].VpcId' --output text)
 MYIP=$(curl -s https://checkip.amazonaws.com)
 
 INSTANCE_ID=""
 SG_ID=""
+EPHEMERAL_KEY=""
 cleanup() {
   set +e
   if [[ -n "$INSTANCE_ID" ]]; then
@@ -88,6 +100,10 @@ cleanup() {
   if [[ -n "$SG_ID" ]]; then
     $AWS ec2 delete-security-group --group-id "$SG_ID" && echo "==> deleted $SG_ID"
   fi
+  if [[ -n "$EPHEMERAL_KEY" ]]; then
+    $AWS ec2 delete-key-pair --key-name "$EPHEMERAL_KEY" && echo "==> deleted key pair $EPHEMERAL_KEY"
+    rm -f "$KEY_FILE"
+  fi
   # the independent check: an empty answer here means nothing is left costing money
   $AWS ec2 describe-instances \
     --filters Name=tag:karate-js-benchmark,Values=true \
@@ -95,6 +111,20 @@ cleanup() {
     --query 'Reservations[].Instances[].InstanceId' --output text
 }
 trap cleanup EXIT
+
+# no key pair given → create an ephemeral one, deleted (with its pem) by cleanup
+if [[ -z "$KEY_NAME" ]]; then
+  KEY_NAME="karate-js-benchmark-$$"
+  KEY_FILE="target/$KEY_NAME.pem"
+  mkdir -p target
+  $AWS ec2 create-key-pair --key-name "$KEY_NAME" --key-type ed25519 \
+       --query KeyMaterial --output text > "$KEY_FILE"
+  chmod 600 "$KEY_FILE"
+  EPHEMERAL_KEY="$KEY_NAME"
+  echo "==> created ephemeral key pair $KEY_NAME"
+elif [[ -z "$KEY_FILE" ]]; then
+  echo "ERROR: BENCH_KEY_NAME is set but BENCH_KEY_FILE (its private key) is not" >&2; exit 1
+fi
 
 echo "==> creating ephemeral security group (ssh from $MYIP only)"
 SG_ID=$($AWS ec2 create-security-group --group-name "karate-js-benchmark-$$" \

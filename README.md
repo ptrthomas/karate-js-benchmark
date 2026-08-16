@@ -152,7 +152,9 @@ grep karate.version pom.xml
 #    compare against <version> in karatelabs/karate's root pom.xml on main,
 #    and update pom.xml if it has moved
 
-# 2. run it (needs AWS_PROFILE/AWS_REGION and a subnet/key - see the script header)
+# 2. run it - a two-line env (AWS_PROFILE + AWS_REGION) is enough in a typical
+#    account: the script uses your default VPC and an ephemeral key pair it
+#    creates and deletes itself. Copy etc/aws.env.example somewhere private.
 source /path/to/your/private/aws.env
 KARATE_SRC=/path/to/karate ./etc/ec2-benchmark.sh
 
